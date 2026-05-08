@@ -22,6 +22,9 @@ class Session {
   Map<String, List<double>> waveformCache;
   List<String?> trackIds;
   List<int> trackOffsets;
+  List<double> trackVolumes;
+  List<bool> trackMutes;
+  List<bool> trackSolos;
 
   Session({
     required this.projectName,
@@ -31,6 +34,9 @@ class Session {
     required this.waveformCache,
     required this.trackIds,
     required this.trackOffsets,
+    required this.trackVolumes,
+    required this.trackMutes,
+    required this.trackSolos,
   });
 
   Map<String, dynamic> toJson() {
@@ -42,12 +48,15 @@ class Session {
       'waveformCache': waveformCache,
       'trackIds': trackIds,
       'trackOffsets': trackOffsets,
+      'trackVolumes': trackVolumes,
+      'trackMutes': trackMutes,
+      'trackSolos': trackSolos,
     };
   }
 
   factory Session.fromJson(Map<String, dynamic> json) {
     return Session(
-      projectName: json['projectName'] as String? ?? 'UNTITLED_PROJECT',
+      projectName: json['projectName'] as String? ?? 'SESSION_001',
       createdAt: json['createdAt'] != null ? DateTime.parse(json['createdAt'] as String) : DateTime.now(),
       updatedAt: json['updatedAt'] != null ? DateTime.parse(json['updatedAt'] as String) : DateTime.now(),
       trackFiles: List<String?>.from(json['trackFiles'] as List),
@@ -56,6 +65,9 @@ class Session {
       ),
       trackIds: List<String?>.from(json['trackIds'] as List? ?? [null, null, null, null]),
       trackOffsets: List<int>.from(json['trackOffsets'] as List? ?? [0, 0, 0, 0]),
+      trackVolumes: List<double>.from(json['trackVolumes'] as List? ?? [1.0, 1.0, 1.0, 1.0]),
+      trackMutes: List<bool>.from(json['trackMutes'] as List? ?? [false, false, false, false]),
+      trackSolos: List<bool>.from(json['trackSolos'] as List? ?? [false, false, false, false]),
     );
   }
 }
@@ -106,6 +118,10 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   // Audio state
   final List<bool> _armedTracks = [false, false, false, false];
   final List<String?> _trackFiles = [null, null, null, null];
+  final List<double> _trackVolumes = [1.0, 1.0, 1.0, 1.0];
+  final List<bool> _trackMutes = [false, false, false, false];
+  final List<bool> _trackSolos = [false, false, false, false];
+
   final AudioRecorder _recorder = AudioRecorder();
   final List<AudioPlayer> _players = List.generate(4, (_) => AudioPlayer());
 
@@ -135,10 +151,36 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     super.dispose();
   }
 
-  Future<void> _loadSession() async {
+  // --- Project Management & Persistence ---
+
+  Future<String> _getLastProjectName() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/session.json');
+      final file = File('${dir.path}/OrpheusDeck/last_project.txt');
+      if (await file.exists()) {
+        return await file.readAsString();
+      }
+    } catch (e) {}
+    return "SESSION_001";
+  }
+
+  Future<void> _setLastProjectName(String name) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/OrpheusDeck/last_project.txt');
+      if (!await file.parent.exists()) {
+        await file.parent.create(recursive: true);
+      }
+      await file.writeAsString(name);
+    } catch (e) {}
+  }
+
+  Future<void> _loadSession() async {
+    try {
+      _projectName = await _getLastProjectName();
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/OrpheusDeck/$_projectName/session.json');
+      
       if (await file.exists()) {
         final jsonString = await file.readAsString();
         final session = Session.fromJson(jsonDecode(jsonString));
@@ -161,12 +203,16 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
           _sessionCreatedAt = session.createdAt;
           for (int i = 0; i < 4; i++) {
             _trackFiles[i] = session.trackFiles[i];
+            _trackVolumes[i] = session.trackVolumes[i];
+            _trackMutes[i] = session.trackMutes[i];
+            _trackSolos[i] = session.trackSolos[i];
           }
           _waveformCache.addAll(session.waveformCache);
         });
+        _updateMixerState();
         debugPrint("Orpheus Deck: Session loaded successfully from ${file.path}");
       } else {
-        debugPrint("Orpheus Deck: No existing session found. Starting fresh.");
+        debugPrint("Orpheus Deck: No existing session found for $_projectName. Starting fresh.");
       }
     } catch (e) {
       debugPrint("Orpheus Deck: Error loading session: $e");
@@ -183,15 +229,172 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         waveformCache: _waveformCache,
         trackIds: [null, null, null, null],
         trackOffsets: [0, 0, 0, 0],
+        trackVolumes: _trackVolumes,
+        trackMutes: _trackMutes,
+        trackSolos: _trackSolos,
       );
       
       final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/session.json');
+      final file = File('${dir.path}/OrpheusDeck/$_projectName/session.json');
+      if (!await file.parent.exists()) {
+        await file.parent.create(recursive: true);
+      }
       await file.writeAsString(jsonEncode(session.toJson()));
+      await _setLastProjectName(_projectName);
       debugPrint("Orpheus Deck: Session saved successfully to ${file.path}");
     } catch (e) {
       debugPrint("Orpheus Deck: Error saving session: $e");
     }
+  }
+
+  Future<void> _renameProject(String newName) async {
+    if (newName.trim().isEmpty || newName == _projectName) return;
+    _stop();
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final oldDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
+      final newDir = Directory('${dir.path}/OrpheusDeck/$newName');
+      
+      if (await oldDir.exists()) {
+        await oldDir.rename(newDir.path);
+        
+        // Update paths in memory since the folder structure changed
+        Map<String, List<double>> newCache = {};
+        for (int i = 0; i < 4; i++) {
+          if (_trackFiles[i] != null) {
+            String oldPath = _trackFiles[i]!;
+            String newPath = oldPath.replaceFirst('/OrpheusDeck/$_projectName/', '/OrpheusDeck/$newName/');
+            _trackFiles[i] = newPath;
+            if (_waveformCache.containsKey(oldPath)) {
+              newCache[newPath] = _waveformCache[oldPath]!;
+            }
+          }
+        }
+        _waveformCache.clear();
+        _waveformCache.addAll(newCache);
+      }
+      
+      setState(() {
+        _projectName = newName;
+      });
+      await _saveSession();
+      _showSnackbar("PROJECT RENAMED");
+    } catch(e) {
+      _showSnackbar("ERR: RENAME FAILED");
+      debugPrint("Rename error: $e");
+    }
+  }
+
+  Future<void> _newProject(String name) async {
+    if (name.trim().isEmpty) return;
+    _stop();
+    setState(() {
+      _projectName = name;
+      _sessionCreatedAt = DateTime.now();
+      for (int i = 0; i < 4; i++) {
+        _trackFiles[i] = null;
+        _armedTracks[i] = false;
+        _trackVolumes[i] = 1.0;
+        _trackMutes[i] = false;
+        _trackSolos[i] = false;
+      }
+      _waveformCache.clear();
+      _recordDuration = 0;
+      _playbackProgress = 0.0;
+      _playbackMs = 0;
+    });
+    _updateMixerState();
+    await _saveSession();
+    _showSnackbar("NEW PROJECT CREATED");
+  }
+
+  void _showProjectMenu() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: Colors.black,
+          shape: Border.all(color: Colors.white, width: 2),
+          title: const Text(
+            "PROJECT MGMT", 
+            style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold)
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _menuButton("RENAME PROJECT", () {
+                Navigator.pop(context);
+                _showNameDialog("RENAME PROJECT", _projectName, _renameProject);
+              }),
+              const SizedBox(height: 8),
+              _menuButton("NEW PROJECT", () {
+                Navigator.pop(context);
+                _showNameDialog("NEW PROJECT", "SESSION_NEW", _newProject);
+              }),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("CANCEL", style: TextStyle(color: Colors.white54, fontFamily: 'monospace')),
+            ),
+          ],
+        );
+      }
+    );
+  }
+
+  Widget _menuButton(String text, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.white54, width: 1),
+        ),
+        child: Text(
+          text,
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold),
+        ),
+      ),
+    );
+  }
+
+  void _showNameDialog(String title, String initialText, Function(String) onSubmit) {
+    TextEditingController ctrl = TextEditingController(text: initialText);
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: Colors.black,
+          shape: Border.all(color: Colors.white, width: 2),
+          title: Text(title, style: const TextStyle(color: Colors.white, fontFamily: 'monospace')),
+          content: TextField(
+            controller: ctrl,
+            style: const TextStyle(color: Colors.white, fontFamily: 'monospace'),
+            decoration: const InputDecoration(
+              enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white54)),
+              focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white)),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("CANCEL", style: TextStyle(color: Colors.white54, fontFamily: 'monospace')),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                onSubmit(ctrl.text);
+              },
+              child: const Text("SAVE", style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      }
+    );
   }
 
   void _showSnackbar(String message) {
@@ -204,11 +407,52 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     );
   }
 
-  /// High-frequency ticker (50ms) to update waveforms, playhead, and the seconds timer.
+  // --- Transport, Audio & Mixer Logic ---
+
+  void _updateMixerState() {
+    bool anySolo = _trackSolos.contains(true);
+    for (int i = 0; i < 4; i++) {
+      double targetVolume = 0.0;
+      if (anySolo) {
+        if (_trackSolos[i] && !_trackMutes[i]) {
+          targetVolume = _trackVolumes[i];
+        }
+      } else {
+        if (!_trackMutes[i]) {
+          targetVolume = _trackVolumes[i];
+        }
+      }
+      _players[i].setVolume(targetVolume);
+    }
+  }
+
+  void _setVolume(int index, double value) {
+    setState(() {
+      _trackVolumes[index] = value;
+    });
+    _updateMixerState();
+    _saveSession();
+  }
+
+  void _toggleMute(int index) {
+    setState(() {
+      _trackMutes[index] = !_trackMutes[index];
+    });
+    _updateMixerState();
+    _saveSession();
+  }
+
+  void _toggleSolo(int index) {
+    setState(() {
+      _trackSolos[index] = !_trackSolos[index];
+    });
+    _updateMixerState();
+    _saveSession();
+  }
+
   void _startTicker() {
     _tickerTimer?.cancel();
     _tickerTimer = Timer.periodic(const Duration(milliseconds: 50), (Timer t) {
-      // Update playback progress
       if (_isPlaying) {
         int maxMs = _getMaxPlaybackDuration();
         if (maxMs > 0) {
@@ -219,8 +463,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
           });
         }
       }
-
-      // Update seconds display
       if (t.tick % 20 == 0) {
         setState(() {
           _recordDuration++;
@@ -233,7 +475,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     int maxMs = 0;
     for (int i = 0; i < 4; i++) {
       if (_trackFiles[i] != null && _waveformCache.containsKey(_trackFiles[i]!)) {
-        // We know we sampled amplitude every 50ms, so duration = length * 50
         int ms = _waveformCache[_trackFiles[i]!]!.length * 50;
         if (ms > maxMs) maxMs = ms;
       }
@@ -275,6 +516,8 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         _playbackProgress = 0.0;
       });
       
+      _updateMixerState(); // Ensure volumes are correct before play
+      
       for (int i = 0; i < 4; i++) {
         if (_trackFiles[i] != null) {
           await _players[i].setSourceDeviceFile(_trackFiles[i]!);
@@ -309,8 +552,14 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
 
     if (await _recorder.hasPermission()) {
       final dir = await getApplicationDocumentsDirectory();
+      final projDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
+      if (!await projDir.exists()) {
+        await projDir.create(recursive: true);
+      }
       String shortTimestamp = (DateTime.now().millisecondsSinceEpoch % 10000000).toString();
-      final path = '${dir.path}/track_${armedIndex}_$shortTimestamp.m4a';
+      final path = '${projDir.path}/track_${armedIndex}_$shortTimestamp.m4a';
+
+      _updateMixerState(); // Update volumes for playback tracks
 
       // Start playback for any existing tracks before recording starts (Overdub)
       for (int i = 0; i < 4; i++) {
@@ -322,12 +571,10 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
 
       await _recorder.start(const RecordConfig(encoder: AudioEncoder.aacLc), path: path);
 
-      // Listen to real-time amplitude stream to draw the live waveform
       _amplitudeSub = _recorder.onAmplitudeChanged(const Duration(milliseconds: 50)).listen((amp) {
         setState(() {
-          // Normalize DB to 0.0 - 1.0 (Approx -45dB floor)
           double normalized = (amp.current + 45) / 45;
-          if (normalized < 0.02) normalized = 0.02; // Small noise floor visual
+          if (normalized < 0.02) normalized = 0.02;
           if (normalized > 1.0) normalized = 1.0;
           _liveAmplitudes.add(normalized);
         });
@@ -355,7 +602,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         if (armedIndex != -1) {
           setState(() {
             _trackFiles[armedIndex] = path;
-            // Cache the recorded amplitude waveform data
             _waveformCache[path] = List.from(_liveAmplitudes);
             _armedTracks[armedIndex] = false; 
             recordedSomething = true;
@@ -411,7 +657,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         file.deleteSync();
       }
       setState(() {
-        _waveformCache.remove(_trackFiles[index]); // clear cache
+        _waveformCache.remove(_trackFiles[index]);
         _trackFiles[index] = null;
       });
       _showSnackbar('TRK 0${index + 1} CLEARED');
@@ -431,6 +677,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
                 statusLabel: _deckStatus,
                 duration: _recordDuration,
                 projectName: _projectName,
+                onProjectTap: _showProjectMenu,
               ),
               const SizedBox(height: 16),
               
@@ -455,8 +702,14 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
                         filePath: _trackFiles[index],
                         amplitudes: _getAmplitudesForTrack(index),
                         playbackProgress: _playbackProgress,
+                        volume: _trackVolumes[index],
+                        isMuted: _trackMutes[index],
+                        isSoloed: _trackSolos[index],
                         onArmToggled: () => _toggleArmTrack(index),
                         onClear: () => _clearTrack(index),
+                        onVolumeChanged: (val) => _setVolume(index, val),
+                        onMuteToggled: () => _toggleMute(index),
+                        onSoloToggled: () => _toggleSolo(index),
                       );
                     },
                   ),
@@ -485,12 +738,14 @@ class DeckHeader extends StatelessWidget {
   final String statusLabel;
   final int duration;
   final String projectName;
+  final VoidCallback onProjectTap;
 
   const DeckHeader({
     super.key,
     required this.statusLabel,
     required this.duration,
     required this.projectName,
+    required this.onProjectTap,
   });
 
   String get _formattedTime {
@@ -525,18 +780,28 @@ class DeckHeader extends StatelessWidget {
                   letterSpacing: 2,
                 ),
               ),
-              const SizedBox(height: 4),
-              Text(
-                "PROJECT: $projectName",
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontFamily: 'monospace',
-                  fontWeight: FontWeight.bold,
-                  fontSize: 10,
-                  letterSpacing: 1,
+              const SizedBox(height: 6),
+              GestureDetector(
+                onTap: onProjectTap,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    border: Border.all(color: Colors.white54, width: 1),
+                  ),
+                  child: Text(
+                    "PROJECT: $projectName",
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.bold,
+                      fontSize: 10,
+                      letterSpacing: 1,
+                    ),
+                  ),
                 ),
               ),
-              const SizedBox(height: 2),
+              const SizedBox(height: 4),
               const Text(
                 "JUNKFEATHERS TECH // MK-I",
                 style: TextStyle(
@@ -585,7 +850,7 @@ class DeckHeader extends StatelessWidget {
   }
 }
 
-/// A single track strip with an arm button, real waveform view, and clear option.
+/// A single track strip with an arm button, real waveform view, clear option, and basic mixer controls.
 class TrackStrip extends StatelessWidget {
   final int trackNumber;
   final bool isArmed;
@@ -594,8 +859,17 @@ class TrackStrip extends StatelessWidget {
   final String? filePath;
   final List<double> amplitudes;
   final double playbackProgress;
+  
+  // Mixer properties
+  final double volume;
+  final bool isMuted;
+  final bool isSoloed;
+  
   final VoidCallback onArmToggled;
   final VoidCallback onClear;
+  final ValueChanged<double> onVolumeChanged;
+  final VoidCallback onMuteToggled;
+  final VoidCallback onSoloToggled;
 
   const TrackStrip({
     super.key,
@@ -606,8 +880,14 @@ class TrackStrip extends StatelessWidget {
     required this.filePath,
     required this.amplitudes,
     required this.playbackProgress,
+    required this.volume,
+    required this.isMuted,
+    required this.isSoloed,
     required this.onArmToggled,
     required this.onClear,
+    required this.onVolumeChanged,
+    required this.onMuteToggled,
+    required this.onSoloToggled,
   });
 
   bool get _isWaveformActive {
@@ -627,126 +907,214 @@ class TrackStrip extends StatelessWidget {
     String displayId = hasAudio ? filePath!.split('_').last.replaceAll('.m4a', '') : "";
 
     return Padding(
-      padding: const EdgeInsets.all(12),
-      child: Row(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Column(
         children: [
-          // Track Label & File info
-          SizedBox(
-            width: 65,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  "TRK\n0$trackNumber",
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontFamily: 'monospace',
-                    fontWeight: FontWeight.bold,
-                    height: 1.2,
-                  ),
-                ),
-                if (hasAudio) ...[
-                  const SizedBox(height: 4),
-                  Container(
-                    color: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 2),
-                    child: const Text(
-                      "M4A",
-                      style: TextStyle(
-                        color: Colors.black,
+          // Main Deck Row
+          Row(
+            children: [
+              // Track Label & File info
+              SizedBox(
+                width: 65,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      "TRK\n0$trackNumber",
+                      style: const TextStyle(
+                        color: Colors.white,
                         fontFamily: 'monospace',
-                        fontSize: 8,
+                        fontWeight: FontWeight.bold,
+                        height: 1.2,
+                      ),
+                    ),
+                    if (hasAudio) ...[
+                      const SizedBox(height: 4),
+                      Container(
+                        color: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 2),
+                        child: const Text(
+                          "M4A",
+                          style: TextStyle(
+                            color: Colors.black,
+                            fontFamily: 'monospace',
+                            fontSize: 8,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        displayId,
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontFamily: 'monospace',
+                          fontSize: 8,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.clip,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              
+              // Arm Button
+              GestureDetector(
+                onTap: onArmToggled,
+                child: Container(
+                  width: 36,
+                  height: 36,
+                  margin: const EdgeInsets.only(right: 12),
+                  decoration: BoxDecoration(
+                    color: isArmed ? Colors.white : Colors.black,
+                    border: Border.all(color: Colors.white, width: 2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Center(
+                    child: Text(
+                      "A",
+                      style: TextStyle(
+                        color: isArmed ? Colors.black : Colors.white,
+                        fontFamily: 'monospace',
                         fontWeight: FontWeight.bold,
                       ),
                     ),
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    displayId,
-                    style: const TextStyle(
-                      color: Colors.white54,
-                      fontFamily: 'monospace',
-                      fontSize: 8,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.clip,
-                  ),
-                ],
-              ],
-            ),
-          ),
-          
-          // Arm Button
-          GestureDetector(
-            onTap: onArmToggled,
-            child: Container(
-              width: 36,
-              height: 36,
-              margin: const EdgeInsets.only(right: 12),
-              decoration: BoxDecoration(
-                color: isArmed ? Colors.white : Colors.black,
-                border: Border.all(color: Colors.white, width: 2),
-                shape: BoxShape.circle,
-              ),
-              child: Center(
-                child: Text(
-                  "A",
-                  style: TextStyle(
-                    color: isArmed ? Colors.black : Colors.white,
-                    fontFamily: 'monospace',
-                    fontWeight: FontWeight.bold,
-                  ),
                 ),
               ),
-            ),
-          ),
 
-          // Reusable Waveform Widget
-          Expanded(
-            child: Container(
-              height: 40,
-              decoration: BoxDecoration(
-                color: Colors.black,
-                border: Border.all(color: Colors.white54, width: 1),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 2.0),
-                child: WaveformDisplay(
-                  amplitudes: amplitudes,
-                  isLive: isRecording && isArmed,
-                  playbackProgress: playbackProgress,
-                  isActive: _isWaveformActive,
-                ),
-              ),
-            ),
-          ),
-          
-          // Clear Button
-          if (hasAudio)
-            GestureDetector(
-              onTap: onClear,
-              child: Container(
-                width: 36,
-                height: 36,
-                margin: const EdgeInsets.only(left: 12),
-                decoration: BoxDecoration(
-                  color: Colors.black,
-                  border: Border.all(color: Colors.white54, width: 1),
-                ),
-                child: const Center(
-                  child: Text(
-                    "CLR",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontFamily: 'monospace',
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
+              // Reusable Waveform Widget
+              Expanded(
+                child: Container(
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.black,
+                    border: Border.all(color: Colors.white54, width: 1),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2.0),
+                    child: WaveformDisplay(
+                      amplitudes: amplitudes,
+                      isLive: isRecording && isArmed,
+                      playbackProgress: playbackProgress,
+                      isActive: _isWaveformActive,
                     ),
                   ),
                 ),
               ),
-            ),
+              
+              // Clear Button
+              if (hasAudio)
+                GestureDetector(
+                  onTap: onClear,
+                  child: Container(
+                    width: 36,
+                    height: 36,
+                    margin: const EdgeInsets.only(left: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      border: Border.all(color: Colors.white54, width: 1),
+                    ),
+                    child: const Center(
+                      child: Text(
+                        "CLR",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontFamily: 'monospace',
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          
+          const SizedBox(height: 8),
+
+          // Mixer Controls Row
+          Row(
+            children: [
+              const SizedBox(width: 65), // Alignment spacer
+              
+              // Mute Button
+              GestureDetector(
+                onTap: onMuteToggled,
+                child: Container(
+                  width: 24,
+                  height: 20,
+                  decoration: BoxDecoration(
+                    color: isMuted ? Colors.white : Colors.black,
+                    border: Border.all(color: Colors.white, width: 1),
+                  ),
+                  child: Center(
+                    child: Text(
+                      "M",
+                      style: TextStyle(
+                        color: isMuted ? Colors.black : Colors.white,
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.bold,
+                        fontSize: 10,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              
+              // Solo Button
+              GestureDetector(
+                onTap: onSoloToggled,
+                child: Container(
+                  width: 24,
+                  height: 20,
+                  decoration: BoxDecoration(
+                    color: isSoloed ? Colors.white : Colors.black,
+                    border: Border.all(color: Colors.white, width: 1),
+                  ),
+                  child: Center(
+                    child: Text(
+                      "S",
+                      style: TextStyle(
+                        color: isSoloed ? Colors.black : Colors.white,
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.bold,
+                        fontSize: 10,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              
+              // Volume Slider
+              const Text("VOL", style: TextStyle(color: Colors.white54, fontFamily: 'monospace', fontSize: 10)),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 2,
+                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                    activeTrackColor: Colors.white,
+                    inactiveTrackColor: Colors.white24,
+                    thumbColor: Colors.white,
+                  ),
+                  child: Slider(
+                    value: volume,
+                    min: 0.0,
+                    max: 1.0,
+                    onChanged: onVolumeChanged,
+                  ),
+                ),
+              ),
+              
+              // Spacing alignment for right side to match clear button
+              if (hasAudio) const SizedBox(width: 48),
+            ],
+          ),
         ],
       ),
     );
@@ -814,15 +1182,13 @@ class WaveformPainter extends CustomPainter {
     final double midY = size.height / 2;
 
     if (amplitudes.isEmpty) {
-      // Draw a flat line if no audio data is present
       canvas.drawLine(Offset(0, midY), Offset(size.width, midY), paint);
       return;
     }
 
-    final int maxVisibleBars = (size.width / 4).floor(); // 4 pixels per bar spacing
+    final int maxVisibleBars = (size.width / 4).floor(); 
 
     if (isLive) {
-      // Scrolling waveform from right to left during active recording
       int startIndex = amplitudes.length > maxVisibleBars ? amplitudes.length - maxVisibleBars : 0;
       List<double> visibleAmps = amplitudes.sublist(startIndex);
 
@@ -840,10 +1206,8 @@ class WaveformPainter extends CustomPainter {
         startX -= 4.0;
       }
     } else {
-      // Static waveform scaled to fit the full width during playback
       List<double> renderAmps = [];
       
-      // Downsample amplitudes if they exceed the physical width to maintain performance
       if (amplitudes.length > maxVisibleBars) {
         int chunkSize = (amplitudes.length / maxVisibleBars).ceil();
         for (int i = 0; i < amplitudes.length; i += chunkSize) {
@@ -871,7 +1235,6 @@ class WaveformPainter extends CustomPainter {
         );
       }
 
-      // Draw Playhead Indicator overlay
       if (playbackProgress > 0.0 && playbackProgress <= 1.0 && isActive) {
         double playheadX = playbackProgress * size.width;
         canvas.drawLine(
