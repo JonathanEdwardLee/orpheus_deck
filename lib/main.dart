@@ -17,7 +17,37 @@ void main() {
   runApp(const OrpheusDeckApp());
 }
 
-/// The Session model to persist the app state
+enum UndoAction { none, clearTrack, mixer, rename }
+
+class UndoState {
+  UndoAction action = UndoAction.none;
+  
+  int? trackIndex;
+  String? trackFile;
+  List<double>? trackWaveform;
+  
+  List<double>? volumes;
+  List<bool>? mutes;
+  List<bool>? solos;
+  
+  String? oldName;
+  String? newName;
+
+  void clear() {
+    action = UndoAction.none;
+    trackIndex = null;
+    trackFile = null;
+    trackWaveform = null;
+    volumes = null;
+    mutes = null;
+    solos = null;
+    oldName = null;
+    newName = null;
+  }
+  
+  bool get hasUndo => action != UndoAction.none;
+}
+
 class Session {
   String projectName;
   DateTime createdAt;
@@ -114,7 +144,6 @@ class OrpheusDeckApp extends StatelessWidget {
   }
 }
 
-/// The main stateful console for the 4-track recorder.
 class OrpheusConsole extends StatefulWidget {
   const OrpheusConsole({super.key});
 
@@ -143,7 +172,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   final List<bool> _trackSolos = [false, false, false, false];
   List<String> _exports = [];
 
-  // Metronome & Settings
   int _bpm = 120;
   bool _metronomeOn = false;
   String _metronomeSound = 'CLICK';
@@ -164,6 +192,8 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   double _playbackProgress = 0.0;
   int _playbackMs = 0;
 
+  final UndoState _lastUndo = UndoState();
+
   @override
   void initState() {
     super.initState();
@@ -172,7 +202,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     _initMetronome();
     _loadSession();
     
-    // Auto-save protection loop
     _autosaveTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
       if (_isPlaying || _isRecording) _saveSession();
     });
@@ -273,8 +302,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     _metronomeTimer?.cancel();
   }
 
-  // --- Project Management & Persistence ---
-
   Future<String> _getLastProjectName() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -297,6 +324,21 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     } catch (e) {}
   }
 
+  Future<void> _cleanTrash() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final projDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
+      if (await projDir.exists()) {
+        final files = projDir.listSync();
+        for (var file in files) {
+          if (file is File && file.path.endsWith('.trash')) {
+            file.deleteSync();
+          }
+        }
+      }
+    } catch(e) {}
+  }
+
   Future<void> _recoverOrphanedRecordings() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -317,8 +359,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
                     _waveformCache[file.path] = []; 
                     recovered = true;
                     debugPrint("Orpheus Deck: RECOVERY LOG - Recovered orphaned recording to track $trackIndex: ${file.path}");
-                  } else {
-                    debugPrint("Orpheus Deck: RECOVERY LOG - Ignored older orphan for track $trackIndex: ${file.path}");
                   }
                 }
               }
@@ -330,14 +370,14 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
           _showSnackbar("RECOVERED UNFINISHED RECORDING");
         }
       }
-    } catch (e) {
-      debugPrint("Orpheus Deck: RECOVERY LOG - Error during recovery: $e");
-    }
+    } catch (e) {}
   }
 
   Future<void> _loadSession() async {
     try {
       _projectName = await _getLastProjectName();
+      await _cleanTrash();
+      
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/OrpheusDeck/$_projectName/session.json');
       
@@ -350,7 +390,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
           if (trackPath != null) {
             final f = File(trackPath);
             if (!await f.exists()) {
-              debugPrint("Warning: File missing for track $i at $trackPath");
               session.trackFiles[i] = null;
               session.waveformCache.remove(trackPath);
             }
@@ -376,11 +415,9 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
           _metronomeSound = session.metronomeSound;
           _headphonesConfirmed = false;
         });
-        debugPrint("Orpheus Deck: Session loaded successfully from ${file.path}");
-      } else {
-        debugPrint("Orpheus Deck: No existing session found for $_projectName. Starting fresh.");
       }
       
+      _lastUndo.clear();
       await _recoverOrphanedRecordings();
       _updateMixerState();
     } catch (e) {
@@ -416,14 +453,92 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       final tempFile = File('${projDir.path}/session.tmp');
       final finalFile = File('${projDir.path}/session.json');
       
-      // Atomic save to prevent corruption if app crashes during write
       await tempFile.writeAsString(jsonEncode(session.toJson()), flush: true);
       await tempFile.rename(finalFile.path);
       
       await _setLastProjectName(_projectName);
-    } catch (e) {
-      debugPrint("Orpheus Deck: Error saving session: $e");
+    } catch (e) {}
+  }
+
+  void _performUndo() async {
+    if (_isRecording || _isPlaying) {
+      _showSnackbar("ERR: STOP TRANSPORT TO UNDO");
+      return;
     }
+
+    if (_lastUndo.action == UndoAction.clearTrack) {
+      int idx = _lastUndo.trackIndex!;
+      String file = _lastUndo.trackFile!;
+      if (_trackFiles[idx] != null) {
+        _showSnackbar("ERR: TRACK 0${idx + 1} NOT EMPTY");
+        return;
+      }
+      
+      File trash = File('$file.trash');
+      if (trash.existsSync()) {
+        trash.renameSync(file);
+        setState(() {
+          _trackFiles[idx] = file;
+          if (_lastUndo.trackWaveform != null) {
+            _waveformCache[file] = _lastUndo.trackWaveform!;
+          }
+        });
+        _showSnackbar("TRACK 0${idx + 1} RESTORED");
+      }
+    } 
+    else if (_lastUndo.action == UndoAction.mixer) {
+      setState(() {
+        _trackVolumes.setAll(0, _lastUndo.volumes!);
+        _trackMutes.setAll(0, _lastUndo.mutes!);
+        _trackSolos.setAll(0, _lastUndo.solos!);
+      });
+      _updateMixerState();
+      _showSnackbar("MIXER SETTINGS RESTORED");
+    }
+    else if (_lastUndo.action == UndoAction.rename) {
+      try {
+        final dir = await getApplicationDocumentsDirectory();
+        final currentDir = Directory('${dir.path}/OrpheusDeck/${_lastUndo.newName}');
+        final oldDir = Directory('${dir.path}/OrpheusDeck/${_lastUndo.oldName}');
+        if (await currentDir.exists()) {
+          await currentDir.rename(oldDir.path);
+          
+          Map<String, List<double>> newCache = {};
+          for (int i = 0; i < 4; i++) {
+            if (_trackFiles[i] != null) {
+              String currentPath = _trackFiles[i]!;
+              String oldPath = currentPath.replaceFirst('/OrpheusDeck/${_lastUndo.newName}/', '/OrpheusDeck/${_lastUndo.oldName}/');
+              _trackFiles[i] = oldPath;
+              if (_waveformCache.containsKey(currentPath)) {
+                newCache[oldPath] = _waveformCache[currentPath]!;
+              }
+            }
+          }
+          _waveformCache.clear();
+          _waveformCache.addAll(newCache);
+
+          List<String> newExports = [];
+          for (String exportPath in _exports) {
+            String newPath = exportPath.replaceFirst('/OrpheusDeck/${_lastUndo.newName}/', '/OrpheusDeck/${_lastUndo.oldName}/');
+            newExports.add(newPath);
+          }
+          _exports.clear();
+          _exports.addAll(newExports);
+          
+          setState(() {
+             _projectName = _lastUndo.oldName!;
+          });
+          _showSnackbar("PROJECT RENAME UNDONE");
+        }
+      } catch (e) {
+        _showSnackbar("ERR: UNDO RENAME FAILED");
+      }
+    }
+
+    setState(() {
+      _lastUndo.clear();
+    });
+    _saveSession();
   }
 
   Future<void> _renameProject(String newName) async {
@@ -435,6 +550,11 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       final newDir = Directory('${dir.path}/OrpheusDeck/$newName');
       
       if (await oldDir.exists()) {
+        _lastUndo.clear();
+        _lastUndo.action = UndoAction.rename;
+        _lastUndo.oldName = _projectName;
+        _lastUndo.newName = newName;
+
         await oldDir.rename(newDir.path);
         
         Map<String, List<double>> newCache = {};
@@ -467,12 +587,12 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       _showSnackbar("PROJECT RENAMED");
     } catch(e) {
       _showSnackbar("ERR: RENAME FAILED");
-      debugPrint("Rename error: $e");
     }
   }
 
   Future<void> _newProject(String name) async {
     if (name.trim().isEmpty) return;
+    await _cleanTrash();
     _stop();
     setState(() {
       _projectName = name;
@@ -490,6 +610,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       _recordDuration = 0;
       _playbackProgress = 0.0;
       _playbackMs = 0;
+      _lastUndo.clear();
     });
     _updateMixerState();
     await _saveSession();
@@ -583,10 +704,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
           final file = File(outPath);
           if (file.existsSync()) file.deleteSync();
           _showSnackbar("EXPORT CANCELED");
-          debugPrint("Orpheus Deck: RECOVERY LOG - Export canceled safely.");
         } else {
-          final logs = await session.getLogsAsString();
-          debugPrint("Orpheus Deck: RECOVERY LOG - FFmpeg Error: $logs");
           _showSnackbar("ERR: EXPORT FAILED");
         }
         setState(() {
@@ -597,7 +715,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         _exportSessionId = session.getSessionId();
       });
     } catch (e) {
-      debugPrint("Export error: $e");
       _showSnackbar("ERR: EXPORT FAILED");
       setState(() {
         _isExporting = false;
@@ -914,6 +1031,19 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
 
   // --- Transport, Audio & Mixer Logic ---
 
+  void _saveMixerUndo() {
+    _lastUndo.clear();
+    _lastUndo.action = UndoAction.mixer;
+    _lastUndo.volumes = List.from(_trackVolumes);
+    _lastUndo.mutes = List.from(_trackMutes);
+    _lastUndo.solos = List.from(_trackSolos);
+    setState(() {}); 
+  }
+
+  void _onVolumeChangeStart(int index, double value) {
+    _saveMixerUndo();
+  }
+
   void _updateMixerState() {
     bool anySolo = _trackSolos.contains(true);
     for (int i = 0; i < 4; i++) {
@@ -940,6 +1070,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   }
 
   void _toggleMute(int index) {
+    _saveMixerUndo();
     setState(() {
       _trackMutes[index] = !_trackMutes[index];
     });
@@ -948,6 +1079,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   }
 
   void _toggleSolo(int index) {
+    _saveMixerUndo();
     setState(() {
       _trackSolos[index] = !_trackSolos[index];
     });
@@ -1200,9 +1332,17 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     }
     if (_trackFiles[index] != null) {
       final file = File(_trackFiles[index]!);
+      
+      _lastUndo.clear();
+      _lastUndo.action = UndoAction.clearTrack;
+      _lastUndo.trackIndex = index;
+      _lastUndo.trackFile = _trackFiles[index];
+      _lastUndo.trackWaveform = _waveformCache[_trackFiles[index]!];
+      
       if (file.existsSync()) {
-        file.deleteSync();
+        file.renameSync('${file.path}.trash');
       }
+      
       setState(() {
         _waveformCache.remove(_trackFiles[index]);
         _trackFiles[index] = null;
@@ -1225,6 +1365,8 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
                 duration: _recordDuration,
                 projectName: _projectName,
                 onProjectTap: _showProjectMenu,
+                hasUndo: _lastUndo.hasUndo,
+                onUndo: _performUndo,
               ),
               const SizedBox(height: 16),
               
@@ -1254,6 +1396,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
                         isSoloed: _trackSolos[index],
                         onArmToggled: () => _toggleArmTrack(index),
                         onClear: () => _clearTrack(index),
+                        onVolumeChangeStart: (val) => _onVolumeChangeStart(index, val),
                         onVolumeChanged: (val) => _setVolume(index, val),
                         onMuteToggled: () => _toggleMute(index),
                         onSoloToggled: () => _toggleSolo(index),
@@ -1288,6 +1431,8 @@ class DeckHeader extends StatelessWidget {
   final int duration;
   final String projectName;
   final VoidCallback onProjectTap;
+  final bool hasUndo;
+  final VoidCallback onUndo;
 
   const DeckHeader({
     super.key,
@@ -1295,6 +1440,8 @@ class DeckHeader extends StatelessWidget {
     required this.duration,
     required this.projectName,
     required this.onProjectTap,
+    this.hasUndo = false,
+    required this.onUndo,
   });
 
   String get _formattedTime {
@@ -1330,25 +1477,51 @@ class DeckHeader extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 6),
-              GestureDetector(
-                onTap: onProjectTap,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Colors.white24,
-                    border: Border.all(color: Colors.white54, width: 1),
-                  ),
-                  child: Text(
-                    "PROJECT: $projectName",
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontFamily: 'monospace',
-                      fontWeight: FontWeight.bold,
-                      fontSize: 10,
-                      letterSpacing: 1,
+              Row(
+                children: [
+                  GestureDetector(
+                    onTap: onProjectTap,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        border: Border.all(color: Colors.white54, width: 1),
+                      ),
+                      child: Text(
+                        "PROJECT: $projectName",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.bold,
+                          fontSize: 10,
+                          letterSpacing: 1,
+                        ),
+                      ),
                     ),
                   ),
-                ),
+                  if (hasUndo) ...[
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: onUndo,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.black,
+                          border: Border.all(color: Colors.white, width: 1),
+                        ),
+                        child: const Text(
+                          "UNDO",
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontFamily: 'monospace',
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
               const SizedBox(height: 4),
               const Text(
@@ -1416,6 +1589,7 @@ class TrackStrip extends StatelessWidget {
   
   final VoidCallback onArmToggled;
   final VoidCallback onClear;
+  final ValueChanged<double>? onVolumeChangeStart;
   final ValueChanged<double> onVolumeChanged;
   final VoidCallback onMuteToggled;
   final VoidCallback onSoloToggled;
@@ -1434,6 +1608,7 @@ class TrackStrip extends StatelessWidget {
     required this.isSoloed,
     required this.onArmToggled,
     required this.onClear,
+    this.onVolumeChangeStart,
     required this.onVolumeChanged,
     required this.onMuteToggled,
     required this.onSoloToggled,
@@ -1655,6 +1830,7 @@ class TrackStrip extends StatelessWidget {
                     value: volume,
                     min: 0.0,
                     max: 1.0,
+                    onChangeStart: onVolumeChangeStart,
                     onChanged: onVolumeChanged,
                   ),
                 ),
