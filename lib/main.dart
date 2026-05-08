@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() {
   runApp(const OrpheusDeckApp());
@@ -26,6 +27,7 @@ class Session {
   List<double> trackVolumes;
   List<bool> trackMutes;
   List<bool> trackSolos;
+  List<String> exports;
 
   Session({
     required this.projectName,
@@ -38,6 +40,7 @@ class Session {
     required this.trackVolumes,
     required this.trackMutes,
     required this.trackSolos,
+    required this.exports,
   });
 
   Map<String, dynamic> toJson() {
@@ -52,6 +55,7 @@ class Session {
       'trackVolumes': trackVolumes,
       'trackMutes': trackMutes,
       'trackSolos': trackSolos,
+      'exports': exports,
     };
   }
 
@@ -69,6 +73,7 @@ class Session {
       trackVolumes: List<double>.from(json['trackVolumes'] as List? ?? [1.0, 1.0, 1.0, 1.0]),
       trackMutes: List<bool>.from(json['trackMutes'] as List? ?? [false, false, false, false]),
       trackSolos: List<bool>.from(json['trackSolos'] as List? ?? [false, false, false, false]),
+      exports: List<String>.from(json['exports'] as List? ?? []),
     );
   }
 }
@@ -119,6 +124,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   final List<double> _trackVolumes = [1.0, 1.0, 1.0, 1.0];
   final List<bool> _trackMutes = [false, false, false, false];
   final List<bool> _trackSolos = [false, false, false, false];
+  List<String> _exports = [];
 
   final AudioRecorder _recorder = AudioRecorder();
   final List<AudioPlayer> _players = List.generate(4, (_) => AudioPlayer());
@@ -203,6 +209,9 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
             _trackSolos[i] = session.trackSolos[i];
           }
           _waveformCache.addAll(session.waveformCache);
+          
+          _exports = List<String>.from(session.exports);
+          _exports.removeWhere((path) => !File(path).existsSync());
         });
         _updateMixerState();
         debugPrint("Orpheus Deck: Session loaded successfully from ${file.path}");
@@ -227,6 +236,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         trackVolumes: _trackVolumes,
         trackMutes: _trackMutes,
         trackSolos: _trackSolos,
+        exports: _exports,
       );
       
       final dir = await getApplicationDocumentsDirectory();
@@ -266,6 +276,14 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         }
         _waveformCache.clear();
         _waveformCache.addAll(newCache);
+
+        List<String> newExports = [];
+        for (String exportPath in _exports) {
+          String newPath = exportPath.replaceFirst('/OrpheusDeck/$_projectName/', '/OrpheusDeck/$newName/');
+          newExports.add(newPath);
+        }
+        _exports.clear();
+        _exports.addAll(newExports);
       }
       
       setState(() {
@@ -293,6 +311,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         _trackSolos[i] = false;
       }
       _waveformCache.clear();
+      _exports.clear();
       _recordDuration = 0;
       _playbackProgress = 0.0;
       _playbackMs = 0;
@@ -381,6 +400,10 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       await FFmpegKit.executeWithArguments(command).then((session) async {
         final returnCode = await session.getReturnCode();
         if (ReturnCode.isSuccess(returnCode)) {
+          setState(() {
+            _exports.add(outPath);
+          });
+          _saveSession();
           _showExportSuccessDialog(outPath);
         } else {
           final logs = await session.getLogsAsString();
@@ -412,8 +435,53 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
           ),
           actions: [
             TextButton(
+              onPressed: () {
+                Share.shareXFiles([XFile(path)], text: 'Exported from Orpheus Deck');
+              },
+              child: const Text("SHARE", style: TextStyle(color: Colors.white, fontFamily: 'monospace')),
+            ),
+            TextButton(
               onPressed: () => Navigator.pop(context),
               child: const Text("OK", style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      }
+    );
+  }
+
+  void _showExportOptionsDialog(String path) {
+    String filename = path.split('/').last;
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: Colors.black,
+          shape: Border.all(color: Colors.white, width: 2),
+          title: Text(filename, style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 12)),
+          content: const Text("What would you like to do?", style: TextStyle(color: Colors.white54, fontFamily: 'monospace', fontSize: 10)),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                final file = File(path);
+                if (file.existsSync()) {
+                  file.deleteSync();
+                }
+                setState(() {
+                  _exports.remove(path);
+                });
+                _saveSession();
+                _showSnackbar("EXPORT DELETED");
+              },
+              child: const Text("DELETE", style: TextStyle(color: Colors.white, fontFamily: 'monospace')),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                Share.shareXFiles([XFile(path)], text: 'Exported from Orpheus Deck');
+              },
+              child: const Text("SHARE", style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
             ),
           ],
         );
@@ -432,37 +500,57 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
             "PROJECT MGMT", 
             style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold)
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _menuButton("RENAME PROJECT", () {
-                Navigator.pop(context);
-                _showNameDialog("RENAME PROJECT", _projectName, _renameProject);
-              }),
-              const SizedBox(height: 8),
-              _menuButton("NEW PROJECT", () {
-                Navigator.pop(context);
-                _showNameDialog("NEW PROJECT", "SESSION_NEW", _newProject);
-              }),
-              const SizedBox(height: 16),
-              Container(height: 1, color: Colors.white24),
-              const SizedBox(height: 16),
-              _menuButton("EXPORT RAW MIX", () {
-                Navigator.pop(context);
-                _exportMix(false);
-              }),
-              const SizedBox(height: 8),
-              _menuButton("EXPORT YT MASTER", () {
-                Navigator.pop(context);
-                _exportMix(true);
-              }),
-            ],
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _menuButton("RENAME PROJECT", () {
+                  Navigator.pop(context);
+                  _showNameDialog("RENAME PROJECT", _projectName, _renameProject);
+                }),
+                const SizedBox(height: 8),
+                _menuButton("NEW PROJECT", () {
+                  Navigator.pop(context);
+                  _showNameDialog("NEW PROJECT", "SESSION_NEW", _newProject);
+                }),
+                const SizedBox(height: 16),
+                Container(height: 1, color: Colors.white24),
+                const SizedBox(height: 16),
+                _menuButton("EXPORT RAW MIX", () {
+                  Navigator.pop(context);
+                  _exportMix(false);
+                }),
+                const SizedBox(height: 8),
+                _menuButton("EXPORT YT MASTER", () {
+                  Navigator.pop(context);
+                  _exportMix(true);
+                }),
+                const SizedBox(height: 16),
+                Container(height: 1, color: Colors.white24),
+                const SizedBox(height: 16),
+                const Text("EXPORTS", style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 12, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                const SizedBox(height: 8),
+                if (_exports.isEmpty)
+                  const Text("NO EXPORTS YET", style: TextStyle(color: Colors.white54, fontFamily: 'monospace', fontSize: 10), textAlign: TextAlign.center)
+                else
+                  ..._exports.map((path) {
+                    String filename = path.split('/').last;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8.0),
+                      child: _menuButton(filename, () {
+                        Navigator.pop(context);
+                        _showExportOptionsDialog(path);
+                      }),
+                    );
+                  }).toList(),
+              ],
+            ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text("CANCEL", style: TextStyle(color: Colors.white54, fontFamily: 'monospace')),
+              child: const Text("CLOSE", style: TextStyle(color: Colors.white54, fontFamily: 'monospace')),
             ),
           ],
         );
