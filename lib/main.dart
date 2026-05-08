@@ -145,7 +145,6 @@ class OrpheusDeckApp extends StatelessWidget {
           primary: Colors.white,
           secondary: Colors.white,
           surface: Colors.black,
-          background: Colors.black,
         ),
       ),
       initialRoute: '/splash',
@@ -260,20 +259,25 @@ class JunkfeathersLogoPainter extends CustomPainter {
     canvas.translate(jitterX, jitterY);
 
     double opacity = 1.0;
-    if (phase == 0) opacity = 0.1 + (0.9 * phaseProgress);
-    if (phase == 2) opacity = 1.0 - (0.9 * phaseProgress);
+    if (phase == 0) {
+      opacity = 0.1 + (0.9 * phaseProgress);
+    }
+    if (phase == 2) {
+      opacity = 1.0 - (0.9 * phaseProgress);
+    }
 
     if (phase != 1) {
-      if (globalR.nextInt(100) < 5)
+      if (globalR.nextInt(100) < 5) {
         opacity *= 0.5 + (globalR.nextDouble() * 0.5);
+      }
     }
 
     final whitePaint = Paint()
-      ..color = Colors.white.withOpacity(opacity)
+      ..color = Colors.white.withValues(alpha: opacity)
       ..style = PaintingStyle.fill;
 
     final linePaint = Paint()
-      ..color = Colors.white.withOpacity(opacity)
+      ..color = Colors.white.withValues(alpha: opacity)
       ..strokeWidth = 1.0
       ..style = PaintingStyle.stroke;
 
@@ -288,13 +292,15 @@ class JunkfeathersLogoPainter extends CustomPainter {
       int currentStep = (phaseProgress * (steps - 1)).floor();
 
       int coverChance = 0;
-      if (phase == 0)
+      if (phase == 0) {
         coverChance = (90 - (75 * currentStep / (steps - 1))).toInt();
-      if (phase == 2)
+      }
+      if (phase == 2) {
         coverChance = (15 + (80 * currentStep / (steps - 1))).toInt();
+      }
 
       final blackPaint = Paint()..color = Colors.black;
-      final fastLinePaint = Paint()..color = Colors.white.withOpacity(opacity);
+      final fastLinePaint = Paint()..color = Colors.white.withValues(alpha: opacity);
 
       for (int y = 0; y < 64;) {
         int h = globalR.nextInt(9) + 2;
@@ -314,7 +320,7 @@ class JunkfeathersLogoPainter extends CustomPainter {
     canvas.translate(-jitterX, -jitterY);
 
     final scanlinePaint = Paint()
-      ..color = Colors.black.withOpacity(0.3)
+      ..color = Colors.black.withValues(alpha: 0.3)
       ..style = PaintingStyle.fill;
 
     for (double sy = 0; sy < 64; sy += 2) {
@@ -328,7 +334,7 @@ class JunkfeathersLogoPainter extends CustomPainter {
       text: TextSpan(
         text: text,
         style: TextStyle(
-          color: Colors.white.withOpacity(opacity),
+          color: Colors.white.withValues(alpha: opacity),
           fontFamily: 'monospace',
           fontSize: size * 8.0,
           fontWeight: FontWeight.bold,
@@ -388,7 +394,7 @@ class CassetteHomeScreen extends StatefulWidget {
 class _CassetteHomeScreenState extends State<CassetteHomeScreen>
     with SingleTickerProviderStateMixin {
   String? _lastProjectName;
-  List<String> _allProjects = [];
+  final List<String> _allProjects = [];
   late AnimationController _idleCtrl;
 
   @override
@@ -428,7 +434,9 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
       }
 
       if (mounted) setState(() {});
-    } catch (e) {}
+    } catch (e, s) {
+      debugPrint('Error scanning projects: $e\n$s');
+    }
   }
 
   String _sanitizeName(String input) {
@@ -847,7 +855,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
   final List<AudioPlayer> _players = List.generate(4, (_) => AudioPlayer());
 
   final Map<String, List<double>> _waveformCache = {};
-  List<double> _liveAmplitudes = [];
+  final List<double> _liveAmplitudes = [];
   StreamSubscription<Amplitude>? _amplitudeSub;
 
   double _playbackProgress = 0.0;
@@ -1017,7 +1025,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
         await file.parent.create(recursive: true);
       }
       await file.writeAsString(name);
-    } catch (e) {}
+    } catch (e, s) {
+      debugPrint('Error setting last project name: $e\n$s');
+    }
   }
 
   Future<void> _cleanTrash() async {
@@ -1032,7 +1042,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
           }
         }
       }
-    } catch (e) {}
+    } catch (e, s) {
+      debugPrint('Error cleaning trash: $e\n$s');
+    }
   }
 
   Future<void> _recoverOrphanedRecordings() async {
@@ -1069,7 +1081,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
           _showSnackbar("RECOVERED UNFINISHED RECORDING");
         }
       }
-    } catch (e) {}
+    } catch (e, s) {
+      debugPrint('Error recovering recordings: $e\n$s');
+    }
   }
 
   Future<void> _initializeNewProject(String name) async {
@@ -1178,7 +1192,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
       await tempFile.rename(finalFile.path);
 
       await _setLastProjectName(_projectName);
-    } catch (e) {}
+    } catch (e, s) {
+      debugPrint('Error saving session: $e\n$s');
+    }
   }
 
   void _performUndo() async {
@@ -1456,8 +1472,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
             actions: [
               TextButton(
                 onPressed: () {
-                  Share.shareXFiles([XFile(path)],
-                      text: 'Exported from Orpheus Deck');
+                  SharePlus.instance.share(ShareParams(
+                      files: [XFile(path)],
+                      text: 'Exported from Orpheus Deck'));
                 },
                 child: const Text("SHARE",
                     style: TextStyle(
@@ -1515,8 +1532,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
               TextButton(
                 onPressed: () {
                   Navigator.pop(context);
-                  Share.shareXFiles([XFile(path)],
-                      text: 'Exported from Orpheus Deck');
+                  SharePlus.instance.share(ShareParams(
+                      files: [XFile(path)],
+                      text: 'Exported from Orpheus Deck'));
                 },
                 child: const Text("SHARE",
                     style: TextStyle(
@@ -1713,9 +1731,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
                         child: _menuButton(filename, () {
                           Navigator.pop(context);
                           _showExportOptionsDialog(path);
-                        }),
+                         }),
                       );
-                    }).toList(),
+                    }),
                   const SizedBox(height: 24),
                   _menuButton("EXIT TO MENU", () {
                     _stop();
