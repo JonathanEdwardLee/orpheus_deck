@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 
 void main() {
   runApp(const OrpheusDeckApp());
@@ -82,7 +83,6 @@ class OrpheusDeckApp extends StatelessWidget {
       title: 'Orpheus Deck',
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: Colors.black,
-        // Enforcing the monochrome OLED style globally
         colorScheme: const ColorScheme.dark(
           primary: Colors.white,
           secondary: Colors.white,
@@ -106,16 +106,14 @@ class OrpheusConsole extends StatefulWidget {
 class _OrpheusConsoleState extends State<OrpheusConsole> {
   bool _isPlaying = false;
   bool _isRecording = false;
+  bool _isExporting = false;
   int _recordDuration = 0;
   
-  // Ticker for smooth waveform and playhead updates
   Timer? _tickerTimer;
   
-  // Session data
   String _projectName = "SESSION_001";
   DateTime _sessionCreatedAt = DateTime.now();
 
-  // Audio state
   final List<bool> _armedTracks = [false, false, false, false];
   final List<String?> _trackFiles = [null, null, null, null];
   final List<double> _trackVolumes = [1.0, 1.0, 1.0, 1.0];
@@ -125,12 +123,10 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   final AudioRecorder _recorder = AudioRecorder();
   final List<AudioPlayer> _players = List.generate(4, (_) => AudioPlayer());
 
-  // Waveform caching and live recording state
   final Map<String, List<double>> _waveformCache = {};
   List<double> _liveAmplitudes = [];
   StreamSubscription<Amplitude>? _amplitudeSub;
   
-  // Playback sync
   double _playbackProgress = 0.0;
   int _playbackMs = 0;
 
@@ -185,7 +181,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         final jsonString = await file.readAsString();
         final session = Session.fromJson(jsonDecode(jsonString));
         
-        // Verify files actually exist on disk, otherwise mark track empty
         for (int i = 0; i < 4; i++) {
           final trackPath = session.trackFiles[i];
           if (trackPath != null) {
@@ -258,7 +253,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       if (await oldDir.exists()) {
         await oldDir.rename(newDir.path);
         
-        // Update paths in memory since the folder structure changed
         Map<String, List<double>> newCache = {};
         for (int i = 0; i < 4; i++) {
           if (_trackFiles[i] != null) {
@@ -308,6 +302,125 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     _showSnackbar("NEW PROJECT CREATED");
   }
 
+  Future<void> _exportMix(bool isYoutubeMaster) async {
+    if (_isRecording || _isPlaying) _stop();
+    
+    setState(() {
+      _isExporting = true;
+    });
+
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final projDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
+      if (!await projDir.exists()) await projDir.create(recursive: true);
+
+      String timestamp = (DateTime.now().millisecondsSinceEpoch).toString();
+      String outName = isYoutubeMaster ? "youtube_master_$timestamp.wav" : "raw_mix_$timestamp.wav";
+      String outPath = '${projDir.path}/$outName';
+
+      List<String> inputs = [];
+      List<String> filterParts = [];
+      List<double> targetVolList = [];
+      int activeCount = 0;
+
+      bool anySolo = _trackSolos.contains(true);
+
+      for (int i = 0; i < 4; i++) {
+        if (_trackFiles[i] != null && File(_trackFiles[i]!).existsSync()) {
+          double targetVol = 0.0;
+          if (anySolo) {
+            if (_trackSolos[i] && !_trackMutes[i]) targetVol = _trackVolumes[i];
+          } else {
+            if (!_trackMutes[i]) targetVol = _trackVolumes[i];
+          }
+
+          if (targetVol > 0.01) { 
+            inputs.add("-i");
+            inputs.add(_trackFiles[i]!);
+            targetVolList.add(targetVol);
+            activeCount++;
+          }
+        }
+      }
+
+      if (activeCount == 0) {
+        _showSnackbar("ERR: NO AUDIBLE TRACKS");
+        setState(() => _isExporting = false);
+        return;
+      }
+
+      for (int i = 0; i < activeCount; i++) {
+        filterParts.add("[$i:a]volume=${targetVolList[i]}[a$i]");
+      }
+      
+      String filterGraph = filterParts.join(";");
+      String outPad = "[a0]";
+      
+      if (activeCount > 1) {
+        String mixInputs = "";
+        for (int i = 0; i < activeCount; i++) {
+          mixInputs += "[a$i]";
+        }
+        filterGraph += ";${mixInputs}amix=inputs=$activeCount:duration=longest,volume=$activeCount[mix]";
+        outPad = "[mix]";
+      }
+
+      if (isYoutubeMaster) {
+        // EBU R128 mastering: Integrated LUFS -14, True Peak -1.0dB, Loudness Range 11
+        filterGraph += ";${outPad}loudnorm=I=-14:TP=-1:LRA=11[master]";
+        outPad = "[master]";
+      }
+
+      List<String> command = [
+        ...inputs,
+        "-filter_complex", filterGraph,
+        "-map", outPad,
+        outPath
+      ];
+
+      await FFmpegKit.executeWithArguments(command).then((session) async {
+        final returnCode = await session.getReturnCode();
+        if (ReturnCode.isSuccess(returnCode)) {
+          _showExportSuccessDialog(outPath);
+        } else {
+          final logs = await session.getLogsAsString();
+          debugPrint("FFmpeg Error: $logs");
+          _showSnackbar("ERR: EXPORT FAILED");
+        }
+      });
+    } catch (e) {
+      debugPrint("Export error: $e");
+      _showSnackbar("ERR: EXPORT FAILED");
+    } finally {
+      setState(() {
+        _isExporting = false;
+      });
+    }
+  }
+
+  void _showExportSuccessDialog(String path) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: Colors.black,
+          shape: Border.all(color: Colors.white, width: 2),
+          title: const Text("EXPORT COMPLETE", style: TextStyle(color: Colors.white, fontFamily: 'monospace')),
+          content: SelectableText(
+            "Saved to:\n$path",
+            style: const TextStyle(color: Colors.white54, fontFamily: 'monospace', fontSize: 10),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("OK", style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      }
+    );
+  }
+
   void _showProjectMenu() {
     showDialog(
       context: context,
@@ -331,6 +444,18 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
               _menuButton("NEW PROJECT", () {
                 Navigator.pop(context);
                 _showNameDialog("NEW PROJECT", "SESSION_NEW", _newProject);
+              }),
+              const SizedBox(height: 16),
+              Container(height: 1, color: Colors.white24),
+              const SizedBox(height: 16),
+              _menuButton("EXPORT RAW MIX", () {
+                Navigator.pop(context);
+                _exportMix(false);
+              }),
+              const SizedBox(height: 8),
+              _menuButton("EXPORT YT MASTER", () {
+                Navigator.pop(context);
+                _exportMix(true);
               }),
             ],
           ),
@@ -488,6 +613,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   }
 
   String get _deckStatus {
+    if (_isExporting) return "EXPORTING";
     if (_isRecording) {
       return _isOverdubbing ? "OVERDUB" : "RECORDING";
     } else if (_isPlaying) {
@@ -507,7 +633,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   }
 
   Future<void> _play() async {
-    if (_isRecording) return; 
+    if (_isRecording || _isExporting) return; 
     if (!_isPlaying) {
       setState(() {
         _isPlaying = true;
@@ -516,7 +642,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         _playbackProgress = 0.0;
       });
       
-      _updateMixerState(); // Ensure volumes are correct before play
+      _updateMixerState(); 
       
       for (int i = 0; i < 4; i++) {
         if (_trackFiles[i] != null) {
@@ -529,7 +655,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   }
 
   Future<void> _record() async {
-    if (_isRecording) return;
+    if (_isRecording || _isExporting) return;
     
     int armedCount = _armedTracks.where((isArmed) => isArmed).length;
     if (armedCount != 1) {
@@ -559,9 +685,8 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       String shortTimestamp = (DateTime.now().millisecondsSinceEpoch % 10000000).toString();
       final path = '${projDir.path}/track_${armedIndex}_$shortTimestamp.m4a';
 
-      _updateMixerState(); // Update volumes for playback tracks
+      _updateMixerState(); 
 
-      // Start playback for any existing tracks before recording starts (Overdub)
       for (int i = 0; i < 4; i++) {
         if (_trackFiles[i] != null && i != armedIndex) {
           await _players[i].setSourceDeviceFile(_trackFiles[i]!);
@@ -831,7 +956,7 @@ class DeckHeader extends StatelessWidget {
               Row(
                 children: [
                   Text(
-                    (statusLabel == 'RECORDING' || statusLabel == 'OVERDUB')
+                    (statusLabel == 'RECORDING' || statusLabel == 'OVERDUB' || statusLabel == 'EXPORTING')
                         ? "● $statusLabel"
                         : statusLabel,
                     style: TextStyle(
