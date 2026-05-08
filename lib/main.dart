@@ -127,9 +127,11 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   bool _isRecording = false;
   bool _isExporting = false;
   int _recordDuration = 0;
+  int? _exportSessionId;
   
   Timer? _tickerTimer;
   Timer? _metronomeTimer;
+  Timer? _autosaveTimer;
   
   String _projectName = "SESSION_001";
   DateTime _sessionCreatedAt = DateTime.now();
@@ -169,12 +171,18 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     _metronomePlayer.setPlayerMode(PlayerMode.lowLatency);
     _initMetronome();
     _loadSession();
+    
+    // Auto-save protection loop
+    _autosaveTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      if (_isPlaying || _isRecording) _saveSession();
+    });
   }
 
   @override
   void dispose() {
     _tickerTimer?.cancel();
     _metronomeTimer?.cancel();
+    _autosaveTimer?.cancel();
     _amplitudeSub?.cancel();
     _recorder.dispose();
     _metronomePlayer.dispose();
@@ -289,6 +297,44 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     } catch (e) {}
   }
 
+  Future<void> _recoverOrphanedRecordings() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final projDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
+      if (await projDir.exists()) {
+        final files = projDir.listSync();
+        bool recovered = false;
+        for (var file in files) {
+          if (file is File && file.path.endsWith('.m4a') && file.path.contains('track_')) {
+            if (!_trackFiles.contains(file.path)) {
+              String filename = file.path.split(RegExp(r'[/\\]')).last;
+              final nameParts = filename.split('_');
+              if (nameParts.length >= 2) {
+                int? trackIndex = int.tryParse(nameParts[1]);
+                if (trackIndex != null && trackIndex >= 0 && trackIndex < 4) {
+                  if (_trackFiles[trackIndex] == null) {
+                    _trackFiles[trackIndex] = file.path;
+                    _waveformCache[file.path] = []; 
+                    recovered = true;
+                    debugPrint("Orpheus Deck: RECOVERY LOG - Recovered orphaned recording to track $trackIndex: ${file.path}");
+                  } else {
+                    debugPrint("Orpheus Deck: RECOVERY LOG - Ignored older orphan for track $trackIndex: ${file.path}");
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (recovered) {
+          _saveSession();
+          _showSnackbar("RECOVERED UNFINISHED RECORDING");
+        }
+      }
+    } catch (e) {
+      debugPrint("Orpheus Deck: RECOVERY LOG - Error during recovery: $e");
+    }
+  }
+
   Future<void> _loadSession() async {
     try {
       _projectName = await _getLastProjectName();
@@ -330,11 +376,13 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
           _metronomeSound = session.metronomeSound;
           _headphonesConfirmed = false;
         });
-        _updateMixerState();
         debugPrint("Orpheus Deck: Session loaded successfully from ${file.path}");
       } else {
         debugPrint("Orpheus Deck: No existing session found for $_projectName. Starting fresh.");
       }
+      
+      await _recoverOrphanedRecordings();
+      _updateMixerState();
     } catch (e) {
       debugPrint("Orpheus Deck: Error loading session: $e");
     }
@@ -360,13 +408,19 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       );
       
       final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/OrpheusDeck/$_projectName/session.json');
-      if (!await file.parent.exists()) {
-        await file.parent.create(recursive: true);
+      final projDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
+      if (!await projDir.exists()) {
+        await projDir.create(recursive: true);
       }
-      await file.writeAsString(jsonEncode(session.toJson()));
+      
+      final tempFile = File('${projDir.path}/session.tmp');
+      final finalFile = File('${projDir.path}/session.json');
+      
+      // Atomic save to prevent corruption if app crashes during write
+      await tempFile.writeAsString(jsonEncode(session.toJson()), flush: true);
+      await tempFile.rename(finalFile.path);
+      
       await _setLastProjectName(_projectName);
-      debugPrint("Orpheus Deck: Session saved successfully to ${file.path}");
     } catch (e) {
       debugPrint("Orpheus Deck: Error saving session: $e");
     }
@@ -517,7 +571,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         outPath
       ];
 
-      await FFmpegKit.executeWithArguments(command).then((session) async {
+      FFmpegKit.executeWithArgumentsAsync(command, (session) async {
         final returnCode = await session.getReturnCode();
         if (ReturnCode.isSuccess(returnCode)) {
           setState(() {
@@ -525,16 +579,26 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
           });
           _saveSession();
           _showExportSuccessDialog(outPath);
+        } else if (ReturnCode.isCancel(returnCode)) {
+          final file = File(outPath);
+          if (file.existsSync()) file.deleteSync();
+          _showSnackbar("EXPORT CANCELED");
+          debugPrint("Orpheus Deck: RECOVERY LOG - Export canceled safely.");
         } else {
           final logs = await session.getLogsAsString();
-          debugPrint("FFmpeg Error: $logs");
+          debugPrint("Orpheus Deck: RECOVERY LOG - FFmpeg Error: $logs");
           _showSnackbar("ERR: EXPORT FAILED");
         }
+        setState(() {
+          _isExporting = false;
+          _exportSessionId = null;
+        });
+      }).then((session) {
+        _exportSessionId = session.getSessionId();
       });
     } catch (e) {
       debugPrint("Export error: $e");
       _showSnackbar("ERR: EXPORT FAILED");
-    } finally {
       setState(() {
         _isExporting = false;
       });
@@ -571,7 +635,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   }
 
   void _showExportOptionsDialog(String path) {
-    String filename = path.split('/').last;
+    String filename = path.split(RegExp(r'[/\\]')).last;
     showDialog(
       context: context,
       builder: (context) {
@@ -763,7 +827,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
                   const Text("NO EXPORTS YET", style: TextStyle(color: Colors.white54, fontFamily: 'monospace', fontSize: 10), textAlign: TextAlign.center)
                 else
                   ..._exports.map((path) {
-                    String filename = path.split('/').last;
+                    String filename = path.split(RegExp(r'[/\\]')).last;
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 8.0),
                       child: _menuButton(filename, () {
@@ -1069,6 +1133,11 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   }
 
   Future<void> _stop() async {
+    if (_isExporting && _exportSessionId != null) {
+      FFmpegKit.cancel(_exportSessionId);
+      return;
+    }
+    
     _stopMetronomeTicker();
     bool recordedSomething = false;
 
@@ -1384,7 +1453,7 @@ class TrackStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     bool hasAudio = filePath != null;
-    String displayId = hasAudio ? filePath!.split('_').last.replaceAll('.m4a', '') : "";
+    String displayId = hasAudio ? filePath!.split(RegExp(r'[/\\]')).last.replaceAll('.m4a', '') : "";
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
