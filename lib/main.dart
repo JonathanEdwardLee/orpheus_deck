@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:record/record.dart';
@@ -28,6 +30,9 @@ class Session {
   List<bool> trackMutes;
   List<bool> trackSolos;
   List<String> exports;
+  int bpm;
+  bool metronomeOn;
+  String metronomeSound;
 
   Session({
     required this.projectName,
@@ -41,6 +46,9 @@ class Session {
     required this.trackMutes,
     required this.trackSolos,
     required this.exports,
+    required this.bpm,
+    required this.metronomeOn,
+    required this.metronomeSound,
   });
 
   Map<String, dynamic> toJson() {
@@ -56,6 +64,9 @@ class Session {
       'trackMutes': trackMutes,
       'trackSolos': trackSolos,
       'exports': exports,
+      'bpm': bpm,
+      'metronomeOn': metronomeOn,
+      'metronomeSound': metronomeSound,
     };
   }
 
@@ -74,6 +85,9 @@ class Session {
       trackMutes: List<bool>.from(json['trackMutes'] as List? ?? [false, false, false, false]),
       trackSolos: List<bool>.from(json['trackSolos'] as List? ?? [false, false, false, false]),
       exports: List<String>.from(json['exports'] as List? ?? []),
+      bpm: json['bpm'] as int? ?? 120,
+      metronomeOn: json['metronomeOn'] as bool? ?? false,
+      metronomeSound: json['metronomeSound'] as String? ?? 'CLICK',
     );
   }
 }
@@ -115,6 +129,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   int _recordDuration = 0;
   
   Timer? _tickerTimer;
+  Timer? _metronomeTimer;
   
   String _projectName = "SESSION_001";
   DateTime _sessionCreatedAt = DateTime.now();
@@ -125,6 +140,17 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   final List<bool> _trackMutes = [false, false, false, false];
   final List<bool> _trackSolos = [false, false, false, false];
   List<String> _exports = [];
+
+  // Metronome & Settings
+  int _bpm = 120;
+  bool _metronomeOn = false;
+  String _metronomeSound = 'CLICK';
+  bool _headphonesConfirmed = false;
+  
+  late AudioPlayer _metronomePlayer;
+  String _beepPath = '';
+  String _clickPath = '';
+  String _woodPath = '';
 
   final AudioRecorder _recorder = AudioRecorder();
   final List<AudioPlayer> _players = List.generate(4, (_) => AudioPlayer());
@@ -139,18 +165,104 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   @override
   void initState() {
     super.initState();
+    _metronomePlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
+    _metronomePlayer.setPlayerMode(PlayerMode.lowLatency);
+    _initMetronome();
     _loadSession();
   }
 
   @override
   void dispose() {
     _tickerTimer?.cancel();
+    _metronomeTimer?.cancel();
     _amplitudeSub?.cancel();
     _recorder.dispose();
+    _metronomePlayer.dispose();
     for (var player in _players) {
       player.dispose();
     }
     super.dispose();
+  }
+
+  Uint8List _generateWav(int frequency, int durationMs, String type) {
+    int sampleRate = 44100;
+    int numSamples = (sampleRate * durationMs) ~/ 1000;
+    int byteRate = sampleRate * 2;
+    
+    var buffer = ByteData(44 + numSamples * 2);
+    buffer.setUint8(0, 0x52); buffer.setUint8(1, 0x49); buffer.setUint8(2, 0x46); buffer.setUint8(3, 0x46); 
+    buffer.setUint32(4, 36 + numSamples * 2, Endian.little);
+    buffer.setUint8(8, 0x57); buffer.setUint8(9, 0x41); buffer.setUint8(10, 0x56); buffer.setUint8(11, 0x45); 
+    buffer.setUint8(12, 0x66); buffer.setUint8(13, 0x6D); buffer.setUint8(14, 0x74); buffer.setUint8(15, 0x20); 
+    buffer.setUint32(16, 16, Endian.little); 
+    buffer.setUint16(20, 1, Endian.little); 
+    buffer.setUint16(22, 1, Endian.little); 
+    buffer.setUint32(24, sampleRate, Endian.little); 
+    buffer.setUint32(28, byteRate, Endian.little); 
+    buffer.setUint16(32, 2, Endian.little); 
+    buffer.setUint16(34, 16, Endian.little); 
+    buffer.setUint8(36, 0x64); buffer.setUint8(37, 0x61); buffer.setUint8(38, 0x74); buffer.setUint8(39, 0x61); 
+    buffer.setUint32(40, numSamples * 2, Endian.little);
+
+    for (int i = 0; i < numSamples; i++) {
+      double t = i / sampleRate;
+      double sample = 0;
+      double envelope = 1.0 - (i / numSamples); 
+      
+      if (type == 'BEEP') {
+        sample = sin(2 * pi * frequency * t);
+      } else if (type == 'CLICK') {
+        sample = (Random().nextDouble() * 2 - 1) * envelope;
+      } else if (type == 'WOOD') {
+        sample = (sin(2 * pi * frequency * t) + 0.5 * sin(2 * pi * (frequency * 2.5) * t)) * pow(envelope, 3);
+      }
+      
+      int val = (sample * 32767).toInt();
+      if (val > 32767) val = 32767;
+      if (val < -32768) val = -32768;
+      buffer.setInt16(44 + i * 2, val, Endian.little);
+    }
+    
+    return buffer.buffer.asUint8List();
+  }
+
+  Future<void> _initMetronome() async {
+    final dir = await getTemporaryDirectory();
+    
+    File fBeep = File('${dir.path}/beep.wav');
+    await fBeep.writeAsBytes(_generateWav(880, 50, 'BEEP'));
+    _beepPath = fBeep.path;
+    
+    File fClick = File('${dir.path}/click.wav');
+    await fClick.writeAsBytes(_generateWav(0, 15, 'CLICK'));
+    _clickPath = fClick.path;
+
+    File fWood = File('${dir.path}/wood.wav');
+    await fWood.writeAsBytes(_generateWav(400, 30, 'WOOD'));
+    _woodPath = fWood.path;
+  }
+
+  void _playMetronomeTick() {
+    String path = _clickPath;
+    if (_metronomeSound == 'BEEP') path = _beepPath;
+    if (_metronomeSound == 'WOOD') path = _woodPath;
+    if (path.isNotEmpty) {
+      _metronomePlayer.play(DeviceFileSource(path));
+    }
+  }
+
+  void _startMetronomeTicker() {
+    _metronomeTimer?.cancel();
+    if (!_metronomeOn) return;
+    int msPerBeat = (60000 / _bpm).round();
+    _playMetronomeTick(); 
+    _metronomeTimer = Timer.periodic(Duration(milliseconds: msPerBeat), (Timer t) {
+      _playMetronomeTick();
+    });
+  }
+
+  void _stopMetronomeTicker() {
+    _metronomeTimer?.cancel();
   }
 
   // --- Project Management & Persistence ---
@@ -212,6 +324,11 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
           
           _exports = List<String>.from(session.exports);
           _exports.removeWhere((path) => !File(path).existsSync());
+
+          _bpm = session.bpm;
+          _metronomeOn = session.metronomeOn;
+          _metronomeSound = session.metronomeSound;
+          _headphonesConfirmed = false;
         });
         _updateMixerState();
         debugPrint("Orpheus Deck: Session loaded successfully from ${file.path}");
@@ -237,6 +354,9 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         trackMutes: _trackMutes,
         trackSolos: _trackSolos,
         exports: _exports,
+        bpm: _bpm,
+        metronomeOn: _metronomeOn,
+        metronomeSound: _metronomeSound,
       );
       
       final dir = await getApplicationDocumentsDirectory();
@@ -312,6 +432,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       }
       _waveformCache.clear();
       _exports.clear();
+      _headphonesConfirmed = false;
       _recordDuration = 0;
       _playbackProgress = 0.0;
       _playbackMs = 0;
@@ -385,7 +506,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       }
 
       if (isYoutubeMaster) {
-        // EBU R128 mastering: Integrated LUFS -14, True Peak -1.0dB, Loudness Range 11
         filterGraph += ";${outPad}loudnorm=I=-14:TP=-1:LRA=11[master]";
         outPad = "[master]";
       }
@@ -484,6 +604,114 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
               child: const Text("SHARE", style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
             ),
           ],
+        );
+      }
+    );
+  }
+
+  void _showMetronomeMenu() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: Colors.black,
+              shape: Border.all(color: Colors.white, width: 2),
+              title: const Text("METRONOME", style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                   Row(
+                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                     children: [
+                       const Text("STATUS", style: TextStyle(color: Colors.white54, fontFamily: 'monospace')),
+                       GestureDetector(
+                         onTap: () {
+                           setState(() => _metronomeOn = !_metronomeOn);
+                           setDialogState(() {});
+                           _saveSession();
+                         },
+                         child: Container(
+                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                           decoration: BoxDecoration(
+                             color: _metronomeOn ? Colors.white : Colors.black,
+                             border: Border.all(color: Colors.white),
+                           ),
+                           child: Text(_metronomeOn ? "ON" : "OFF", style: TextStyle(color: _metronomeOn ? Colors.black : Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+                         )
+                       )
+                     ]
+                   ),
+                   const SizedBox(height: 16),
+                   Row(
+                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                     children: [
+                       const Text("BPM", style: TextStyle(color: Colors.white54, fontFamily: 'monospace')),
+                       Row(
+                         children: [
+                           IconButton(
+                             icon: const Icon(Icons.remove, color: Colors.white),
+                             onPressed: () {
+                               if (_bpm > 40) {
+                                 setState(() => _bpm--);
+                                 setDialogState(() {});
+                                 _saveSession();
+                               }
+                             }
+                           ),
+                           Text("$_bpm", style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 16, fontWeight: FontWeight.bold)),
+                           IconButton(
+                             icon: const Icon(Icons.add, color: Colors.white),
+                             onPressed: () {
+                               if (_bpm < 240) {
+                                 setState(() => _bpm++);
+                                 setDialogState(() {});
+                                 _saveSession();
+                               }
+                             }
+                           ),
+                         ]
+                       )
+                     ]
+                   ),
+                   const SizedBox(height: 16),
+                   Row(
+                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                     children: [
+                       const Text("SOUND", style: TextStyle(color: Colors.white54, fontFamily: 'monospace')),
+                       DropdownButton<String>(
+                         value: _metronomeSound,
+                         dropdownColor: Colors.black,
+                         style: const TextStyle(color: Colors.white, fontFamily: 'monospace'),
+                         underline: Container(height: 1, color: Colors.white54),
+                         items: ['CLICK', 'BEEP', 'WOOD'].map((String val) {
+                           return DropdownMenuItem<String>(
+                             value: val,
+                             child: Text(val),
+                           );
+                         }).toList(),
+                         onChanged: (val) {
+                           if (val != null) {
+                             setState(() => _metronomeSound = val);
+                             setDialogState(() {});
+                             _playMetronomeTick(); 
+                             _saveSession();
+                           }
+                         },
+                       )
+                     ]
+                   )
+                ]
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text("CLOSE", style: TextStyle(color: Colors.white54, fontFamily: 'monospace')),
+                ),
+              ],
+            );
+          }
         );
       }
     );
@@ -739,7 +967,36 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         }
       }
       _startTicker();
+      _startMetronomeTicker();
     }
+  }
+
+  void _showHeadphonesWarning() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: Colors.black,
+          shape: Border.all(color: Colors.white, width: 2),
+          title: const Text("WARNING", style: TextStyle(color: Colors.white, fontFamily: 'monospace')),
+          content: const Text("USE HEADPHONES FOR OVERDUB TO PREVENT AUDIO BLEED.", style: TextStyle(color: Colors.white54, fontFamily: 'monospace', fontSize: 12)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("CANCEL", style: TextStyle(color: Colors.white54, fontFamily: 'monospace')),
+            ),
+            TextButton(
+              onPressed: () {
+                setState(() => _headphonesConfirmed = true);
+                Navigator.pop(context);
+                _record(); 
+              },
+              child: const Text("I AM USING HEADPHONES", style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      }
+    );
   }
 
   Future<void> _record() async {
@@ -755,6 +1012,12 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     
     if (_trackFiles[armedIndex] != null) {
       _showSnackbar('ERR: TRACK FULL. CLEAR FIRST.');
+      return;
+    }
+
+    bool isOverdub = _trackFiles.any((file) => file != null);
+    if (isOverdub && !_headphonesConfirmed) {
+      _showHeadphonesWarning();
       return;
     }
 
@@ -801,10 +1064,12 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         _playbackProgress = 0.0;
       });
       _startTicker();
+      _startMetronomeTicker();
     }
   }
 
   Future<void> _stop() async {
+    _stopMetronomeTicker();
     bool recordedSomething = false;
 
     if (_isRecording) {
@@ -933,10 +1198,12 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
               TransportControls(
                 isPlaying: _isPlaying,
                 isRecording: _isRecording,
+                isMetronomeOn: _metronomeOn,
                 onPlay: _play,
                 onStop: _stop,
                 onStopLongPress: _resetTimer,
                 onRecord: _record,
+                onMetro: _showMetronomeMenu,
               ),
             ],
           ),
@@ -1472,19 +1739,23 @@ class WaveformPainter extends CustomPainter {
 class TransportControls extends StatelessWidget {
   final bool isPlaying;
   final bool isRecording;
+  final bool isMetronomeOn;
   final VoidCallback onPlay;
   final VoidCallback onStop;
   final VoidCallback onStopLongPress;
   final VoidCallback onRecord;
+  final VoidCallback onMetro;
 
   const TransportControls({
     super.key,
     required this.isPlaying,
     required this.isRecording,
+    required this.isMetronomeOn,
     required this.onPlay,
     required this.onStop,
     required this.onStopLongPress,
     required this.onRecord,
+    required this.onMetro,
   });
 
   @override
@@ -1517,6 +1788,12 @@ class TransportControls extends StatelessWidget {
             isActive: isRecording,
             onTap: onRecord,
           ),
+          TransportButton(
+            label: "METRO",
+            icon: Icons.timer,
+            isActive: isMetronomeOn,
+            onTap: onMetro,
+          ),
         ],
       ),
     );
@@ -1546,7 +1823,7 @@ class TransportButton extends StatelessWidget {
       onTap: onTap,
       onLongPress: onLongPress,
       child: Container(
-        width: 80,
+        width: 70,
         height: 60,
         decoration: BoxDecoration(
           color: isActive ? Colors.white : Colors.black,
@@ -1566,7 +1843,7 @@ class TransportButton extends StatelessWidget {
               style: TextStyle(
                 color: isActive ? Colors.black : Colors.white,
                 fontWeight: FontWeight.bold,
-                fontSize: 12,
+                fontSize: 10,
                 fontFamily: 'monospace',
                 letterSpacing: 1,
               ),
