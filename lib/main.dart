@@ -175,7 +175,7 @@ class _JunkfeathersGlitchSplashState extends State<JunkfeathersGlitchSplash> wit
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 2870));
+    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 4800));
     _ctrl.forward().then((_) {
       if (mounted) widget.onComplete();
     });
@@ -210,39 +210,56 @@ class _JunkfeathersGlitchSplashState extends State<JunkfeathersGlitchSplash> wit
 }
 
 class JunkfeathersLogoPainter extends CustomPainter {
-  final double progress; // 0.0 to 1.0
+  final double progress; 
 
   JunkfeathersLogoPainter(this.progress);
 
   @override
   void paint(Canvas canvas, Size size) {
-    // scale to 128x64 coordinate system
     canvas.scale(size.width / 128, size.height / 64);
     
-    // figure out phase
-    // 0.0 -> 0.35 : Reveal (990ms)
-    // 0.35 -> 0.69 : Hold (1000ms)
-    // 0.69 -> 1.0 : Hide (880ms)
-    
-    int phase = 0; // 0=reveal, 1=hold, 2=hide
+    int phase = 0;
     double phaseProgress = 0.0;
-    if (progress < (990 / 2870)) {
+    if (progress < (1400 / 4800)) {
       phase = 0;
-      phaseProgress = progress / (990 / 2870);
-    } else if (progress < (1990 / 2870)) {
+      phaseProgress = progress / (1400 / 4800);
+    } else if (progress < (3600 / 4800)) {
       phase = 1;
-      phaseProgress = (progress - (990 / 2870)) / (1000 / 2870);
+      phaseProgress = (progress - (1400 / 4800)) / (2200 / 4800);
     } else {
       phase = 2;
-      phaseProgress = (progress - (1990 / 2870)) / (880 / 2870);
+      phaseProgress = (progress - (3600 / 4800)) / (1200 / 4800);
     }
 
-    // Contrast opacity
+    int totalSteps = 4800 ~/ 55;
+    int globalStep = (progress * totalSteps).floor();
+    Random globalR = Random(globalStep);
+
+    double jitterX = 0;
+    double jitterY = 0;
+
+    if (phase != 1) {
+      if (globalR.nextInt(100) < 40) {
+        jitterX = (globalR.nextInt(3) - 1.0);
+        jitterY = (globalR.nextInt(3) - 1.0);
+      }
+      if (globalR.nextInt(100) < 5) {
+        jitterX += (globalR.nextInt(21) - 10.0);
+      }
+    } else {
+      if (globalR.nextInt(100) < 5) jitterX = (globalR.nextInt(3) - 1.0);
+    }
+
+    canvas.translate(jitterX, jitterY);
+
     double opacity = 1.0;
     if (phase == 0) opacity = 0.1 + (0.9 * phaseProgress);
     if (phase == 2) opacity = 1.0 - (0.9 * phaseProgress);
     
-    // OLED Base Paint
+    if (globalR.nextInt(100) < 8) {
+      opacity *= 0.5 + (globalR.nextDouble() * 0.5);
+    }
+
     final whitePaint = Paint()
       ..color = Colors.white.withOpacity(opacity)
       ..style = PaintingStyle.fill;
@@ -252,41 +269,44 @@ class JunkfeathersLogoPainter extends CustomPainter {
       ..strokeWidth = 1.0
       ..style = PaintingStyle.stroke;
 
-    // Draw JUNKFEATHERS (centered at y=6, size 1)
     _drawText(canvas, "JUNKFEATHERS", 6, 1, opacity);
-    // Draw TECH (centered at y=18, size 2)
     _drawText(canvas, "TECH", 18, 2, opacity);
 
-    // Draw Birds
     _drawBird(canvas, 32, 50, 12, linePaint, whitePaint);
     _drawBird(canvas, 96, 50, 12, linePaint, whitePaint);
 
-    // Glitch Overlays
     if (phase != 1) {
-      // Create a deterministic random based on progress step to lock the 18fps feel
-      int steps = phase == 0 ? 18 : 16;
+      int steps = phase == 0 ? 25 : 21; 
       int currentStep = (phaseProgress * (steps - 1)).floor();
       
       int coverChance = 0;
       if (phase == 0) coverChance = (90 - (75 * currentStep / (steps - 1))).toInt();
       if (phase == 2) coverChance = (15 + (80 * currentStep / (steps - 1))).toInt();
 
-      Random r = Random(currentStep + (phase * 100)); // deterministic seed per step
-      
       final blackPaint = Paint()..color = Colors.black;
       final fastLinePaint = Paint()..color = Colors.white.withOpacity(opacity);
 
       for (int y = 0; y < 64; ) {
-        int h = r.nextInt(9) + 2; // random(2, 10)
-        if (r.nextInt(100) < coverChance) {
+        int h = globalR.nextInt(9) + 2; 
+        if (globalR.nextInt(100) < coverChance) {
           canvas.drawRect(Rect.fromLTWH(0, y.toDouble(), 128, h.toDouble()), blackPaint);
         } else {
-          if (r.nextInt(100) < 10) {
+          if (globalR.nextInt(100) < 10) {
             canvas.drawRect(Rect.fromLTWH(0, y.toDouble(), 128, 1), fastLinePaint);
           }
         }
         y += h;
       }
+    }
+
+    canvas.translate(-jitterX, -jitterY);
+    
+    final scanlinePaint = Paint()
+      ..color = Colors.black.withOpacity(0.3)
+      ..style = PaintingStyle.fill;
+      
+    for (double sy = 0; sy < 64; sy += 2) {
+      canvas.drawRect(Rect.fromLTWH(0, sy, 128, 1), scanlinePaint);
     }
   }
 
@@ -346,14 +366,22 @@ class CassetteHomeScreen extends StatefulWidget {
   State<CassetteHomeScreen> createState() => _CassetteHomeScreenState();
 }
 
-class _CassetteHomeScreenState extends State<CassetteHomeScreen> {
+class _CassetteHomeScreenState extends State<CassetteHomeScreen> with SingleTickerProviderStateMixin {
   String? _lastProjectName;
   List<String> _allProjects = [];
+  late AnimationController _idleCtrl;
 
   @override
   void initState() {
     super.initState();
+    _idleCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 10))..repeat();
     _scanProjects();
+  }
+
+  @override
+  void dispose() {
+    _idleCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _scanProjects() async {
@@ -477,28 +505,39 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.white, width: 4),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Column(
-                  children: [
-                     Row(
-                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                       children: [
-                         Container(width: 40, height: 40, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2))),
-                         const Text("ORPHEUS DECK", style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.w900, fontSize: 18, letterSpacing: 2)),
-                         Container(width: 40, height: 40, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2))),
-                       ]
-                     ),
-                     const SizedBox(height: 12),
-                     const Text("Junkfeathers Tech Multitrack Recorder", style: TextStyle(color: Colors.white54, fontFamily: 'monospace', fontSize: 10), textAlign: TextAlign.center),
-                     const SizedBox(height: 8),
-                     Container(height: 20, width: 120, color: Colors.white24),
-                  ]
-                )
+              AnimatedBuilder(
+                animation: _idleCtrl,
+                builder: (context, child) {
+                  return SizedBox(
+                    height: 180,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        CustomPaint(
+                          size: const Size(double.infinity, 180),
+                          painter: CassettePainter(_idleCtrl.value),
+                        ),
+                        Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const SizedBox(height: 16),
+                            Container(
+                              color: Colors.black,
+                              padding: const EdgeInsets.symmetric(horizontal: 4),
+                              child: const Text("ORPHEUS DECK", style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.w900, fontSize: 18, letterSpacing: 2)),
+                            ),
+                            const SizedBox(height: 4),
+                            Container(
+                              color: Colors.black,
+                              padding: const EdgeInsets.symmetric(horizontal: 4),
+                              child: const Text("Junkfeathers Tech Multitrack Recorder", style: TextStyle(color: Colors.white54, fontFamily: 'monospace', fontSize: 10), textAlign: TextAlign.center),
+                            ),
+                          ]
+                        )
+                      ]
+                    )
+                  );
+                }
               ),
               const SizedBox(height: 48),
 
@@ -528,22 +567,153 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen> {
   }
 }
 
-class _MenuBtn extends StatelessWidget {
+class CassettePainter extends CustomPainter {
+  final double spinProgress;
+
+  CassettePainter(this.spinProgress);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white
+      ..strokeWidth = 2.0
+      ..style = PaintingStyle.stroke;
+      
+    final fillPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+
+    final RRect outerRect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(2, 2, size.width - 4, size.height - 4),
+      const Radius.circular(8)
+    );
+    canvas.drawRRect(outerRect, paint);
+
+    final RRect labelRect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(12, 12, size.width - 24, size.height * 0.55),
+      const Radius.circular(4)
+    );
+    canvas.drawRRect(labelRect, paint);
+    
+    canvas.drawLine(const Offset(20, 24), Offset(size.width - 20, 24), paint);
+    canvas.drawLine(const Offset(20, 32), Offset(size.width - 20, 32), paint);
+
+    double winW = size.width * 0.45;
+    double winH = size.height * 0.25;
+    double winX = (size.width - winW) / 2;
+    double winY = size.height * 0.35;
+    
+    final RRect windowRect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(winX, winY, winW, winH),
+      const Radius.circular(4)
+    );
+    canvas.drawRRect(windowRect, paint);
+    
+    double reelR = winH * 0.4;
+    double leftReelX = winX + winW * 0.25;
+    double rightReelX = winX + winW * 0.75;
+    double reelY = winY + winH / 2;
+    
+    canvas.drawLine(Offset(leftReelX, reelY + reelR), Offset(rightReelX, reelY + reelR), paint);
+    canvas.drawLine(Offset(leftReelX, reelY - reelR), Offset(rightReelX, reelY - reelR), paint);
+
+    void drawReel(double cx, double cy, double radius, double rotation) {
+      canvas.drawCircle(Offset(cx, cy), radius, paint);
+      canvas.drawCircle(Offset(cx, cy), radius * 0.3, paint);
+      
+      canvas.save();
+      canvas.translate(cx, cy);
+      canvas.rotate(rotation);
+      for(int i=0; i<3; i++) {
+        canvas.rotate(2 * pi / 3);
+        canvas.drawLine(Offset(0, radius * 0.3), Offset(0, radius), paint);
+      }
+      canvas.restore();
+    }
+    
+    canvas.drawCircle(Offset(leftReelX, reelY), winH * 0.8, Paint()..color = Colors.white24..style=PaintingStyle.fill);
+    canvas.drawCircle(Offset(rightReelX, reelY), winH * 0.5, Paint()..color = Colors.white24..style=PaintingStyle.fill);
+
+    double rotL = spinProgress * 2 * pi;
+    double rotR = spinProgress * 3 * pi;
+    drawReel(leftReelX, reelY, reelR, rotL);
+    drawReel(rightReelX, reelY, reelR, rotR);
+
+    void drawScrew(double cx, double cy) {
+      canvas.drawCircle(Offset(cx, cy), 3, paint);
+      canvas.drawLine(Offset(cx-2, cy-2), Offset(cx+2, cy+2), paint);
+    }
+    drawScrew(8, 8);
+    drawScrew(size.width - 8, 8);
+    drawScrew(8, size.height - 8);
+    drawScrew(size.width - 8, size.height - 8);
+
+    double trapTopW = size.width * 0.6;
+    double trapBotW = size.width * 0.7;
+    double trapX = (size.width - trapBotW) / 2;
+    double trapTopX = (size.width - trapTopW) / 2;
+    double trapY = size.height - 18;
+    
+    Path trapPath = Path()
+      ..moveTo(trapTopX, trapY)
+      ..lineTo(trapTopX + trapTopW, trapY)
+      ..lineTo(trapX + trapBotW, size.height)
+      ..lineTo(trapX, size.height)
+      ..close();
+    
+    canvas.drawPath(trapPath, paint);
+    
+    canvas.drawCircle(Offset(size.width * 0.3, size.height - 8), 4, paint);
+    canvas.drawCircle(Offset(size.width * 0.7, size.height - 8), 4, paint);
+    canvas.drawCircle(Offset(size.width * 0.5, size.height - 8), 4, fillPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CassettePainter old) => old.spinProgress != spinProgress;
+}
+
+class _MenuBtn extends StatefulWidget {
   final String text;
   final VoidCallback onTap;
   const _MenuBtn(this.text, this.onTap);
 
   @override
+  State<_MenuBtn> createState() => _MenuBtnState();
+}
+
+class _MenuBtnState extends State<_MenuBtn> {
+  bool _isPressed = false;
+
+  @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      child: Container(
+    return GestureDetector(
+      onTapDown: (_) => setState(() => _isPressed = true),
+      onTapUp: (_) {
+        setState(() => _isPressed = false);
+        widget.onTap();
+      },
+      onTapCancel: () => setState(() => _isPressed = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 50),
         padding: const EdgeInsets.symmetric(vertical: 16),
         decoration: BoxDecoration(
-          color: Colors.black,
-          border: Border.all(color: Colors.white, width: 2),
+          color: _isPressed ? Colors.white : Colors.black,
+          border: Border.all(
+            color: _isPressed ? Colors.white : Colors.white70, 
+            width: _isPressed ? 3 : 2
+          ),
         ),
-        child: Text(text, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 14)),
+        child: Text(
+          widget.text, 
+          textAlign: TextAlign.center, 
+          style: TextStyle(
+            color: _isPressed ? Colors.black : Colors.white, 
+            fontFamily: 'monospace', 
+            fontWeight: FontWeight.bold, 
+            fontSize: 14,
+            letterSpacing: 1,
+          )
+        ),
       )
     );
   }
