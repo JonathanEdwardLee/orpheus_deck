@@ -148,32 +148,42 @@ class OrpheusDeckApp extends StatelessWidget {
   }
 }
 
-class SplashScreen extends StatefulWidget {
+class SplashScreen extends StatelessWidget {
   const SplashScreen({super.key});
 
   @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  Widget build(BuildContext context) {
+    return JunkfeathersGlitchSplash(
+      onComplete: () {
+        Navigator.pushReplacementNamed(context, '/home');
+      },
+    );
+  }
 }
 
-class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderStateMixin {
-  late AnimationController _glitchCtrl;
+class JunkfeathersGlitchSplash extends StatefulWidget {
+  final VoidCallback onComplete;
+  const JunkfeathersGlitchSplash({super.key, required this.onComplete});
+
+  @override
+  State<JunkfeathersGlitchSplash> createState() => _JunkfeathersGlitchSplashState();
+}
+
+class _JunkfeathersGlitchSplashState extends State<JunkfeathersGlitchSplash> with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
 
   @override
   void initState() {
     super.initState();
-    _glitchCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 2000));
-    _glitchCtrl.forward();
-    
-    Future.delayed(const Duration(milliseconds: 2500), () {
-      if (mounted) {
-        Navigator.pushReplacementNamed(context, '/home');
-      }
+    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 2870));
+    _ctrl.forward().then((_) {
+      if (mounted) widget.onComplete();
     });
   }
 
   @override
   void dispose() {
-    _glitchCtrl.dispose();
+    _ctrl.dispose();
     super.dispose();
   }
 
@@ -183,44 +193,13 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
       backgroundColor: Colors.black,
       body: Center(
         child: AnimatedBuilder(
-          animation: _glitchCtrl,
+          animation: _ctrl,
           builder: (context, child) {
-            double progress = _glitchCtrl.value;
-            double jitterX = 0;
-            if (progress > 0.2 && progress < 0.4) jitterX = (Random().nextDouble() - 0.5) * 10;
-            if (progress > 0.7 && progress < 0.8) jitterX = (Random().nextDouble() - 0.5) * 20;
-            
-            bool showStatic = (progress > 0.3 && progress < 0.35) || (progress > 0.75 && progress < 0.78);
-
-            return Transform.translate(
-              offset: Offset(jitterX, 0),
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  Image.asset(
-                    'assets/images/chronos_logo.png',
-                    width: 200,
-                    errorBuilder: (context, error, stackTrace) {
-                      return const Text(
-                        "JUNKFEATHERS TECH",
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontFamily: 'monospace',
-                          fontWeight: FontWeight.w900,
-                          fontSize: 24,
-                          letterSpacing: 4,
-                        ),
-                        textAlign: TextAlign.center,
-                      );
-                    },
-                  ),
-                  if (showStatic)
-                    Container(
-                      width: 250,
-                      height: 50,
-                      color: Colors.white24,
-                    )
-                ],
+            return SizedBox(
+              width: 256,
+              height: 128,
+              child: CustomPaint(
+                painter: JunkfeathersLogoPainter(_ctrl.value),
               ),
             );
           },
@@ -228,6 +207,136 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
       ),
     );
   }
+}
+
+class JunkfeathersLogoPainter extends CustomPainter {
+  final double progress; // 0.0 to 1.0
+
+  JunkfeathersLogoPainter(this.progress);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // scale to 128x64 coordinate system
+    canvas.scale(size.width / 128, size.height / 64);
+    
+    // figure out phase
+    // 0.0 -> 0.35 : Reveal (990ms)
+    // 0.35 -> 0.69 : Hold (1000ms)
+    // 0.69 -> 1.0 : Hide (880ms)
+    
+    int phase = 0; // 0=reveal, 1=hold, 2=hide
+    double phaseProgress = 0.0;
+    if (progress < (990 / 2870)) {
+      phase = 0;
+      phaseProgress = progress / (990 / 2870);
+    } else if (progress < (1990 / 2870)) {
+      phase = 1;
+      phaseProgress = (progress - (990 / 2870)) / (1000 / 2870);
+    } else {
+      phase = 2;
+      phaseProgress = (progress - (1990 / 2870)) / (880 / 2870);
+    }
+
+    // Contrast opacity
+    double opacity = 1.0;
+    if (phase == 0) opacity = 0.1 + (0.9 * phaseProgress);
+    if (phase == 2) opacity = 1.0 - (0.9 * phaseProgress);
+    
+    // OLED Base Paint
+    final whitePaint = Paint()
+      ..color = Colors.white.withOpacity(opacity)
+      ..style = PaintingStyle.fill;
+      
+    final linePaint = Paint()
+      ..color = Colors.white.withOpacity(opacity)
+      ..strokeWidth = 1.0
+      ..style = PaintingStyle.stroke;
+
+    // Draw JUNKFEATHERS (centered at y=6, size 1)
+    _drawText(canvas, "JUNKFEATHERS", 6, 1, opacity);
+    // Draw TECH (centered at y=18, size 2)
+    _drawText(canvas, "TECH", 18, 2, opacity);
+
+    // Draw Birds
+    _drawBird(canvas, 32, 50, 12, linePaint, whitePaint);
+    _drawBird(canvas, 96, 50, 12, linePaint, whitePaint);
+
+    // Glitch Overlays
+    if (phase != 1) {
+      // Create a deterministic random based on progress step to lock the 18fps feel
+      int steps = phase == 0 ? 18 : 16;
+      int currentStep = (phaseProgress * (steps - 1)).floor();
+      
+      int coverChance = 0;
+      if (phase == 0) coverChance = (90 - (75 * currentStep / (steps - 1))).toInt();
+      if (phase == 2) coverChance = (15 + (80 * currentStep / (steps - 1))).toInt();
+
+      Random r = Random(currentStep + (phase * 100)); // deterministic seed per step
+      
+      final blackPaint = Paint()..color = Colors.black;
+      final fastLinePaint = Paint()..color = Colors.white.withOpacity(opacity);
+
+      for (int y = 0; y < 64; ) {
+        int h = r.nextInt(9) + 2; // random(2, 10)
+        if (r.nextInt(100) < coverChance) {
+          canvas.drawRect(Rect.fromLTWH(0, y.toDouble(), 128, h.toDouble()), blackPaint);
+        } else {
+          if (r.nextInt(100) < 10) {
+            canvas.drawRect(Rect.fromLTWH(0, y.toDouble(), 128, 1), fastLinePaint);
+          }
+        }
+        y += h;
+      }
+    }
+  }
+
+  void _drawText(Canvas canvas, String text, double y, int size, double opacity) {
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          color: Colors.white.withOpacity(opacity),
+          fontFamily: 'monospace',
+          fontSize: size * 8.0, 
+          fontWeight: FontWeight.bold,
+          height: 1.0,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    );
+    textPainter.layout();
+    double x = (128 - textPainter.width) / 2;
+    textPainter.paint(canvas, Offset(x, y));
+  }
+
+  void _drawBird(Canvas canvas, double cx, double cy, double r, Paint strokePaint, Paint fillPaint) {
+    canvas.drawCircle(Offset(cx, cy), r, strokePaint);
+
+    double exL = cx - (r / 2);
+    double exR = cx + (r / 2);
+    double ey  = cy - (r / 4);
+    double s   = 2;
+
+    canvas.drawLine(Offset(exL - s, ey - s), Offset(exL + s, ey + s), strokePaint);
+    canvas.drawLine(Offset(exL - s, ey + s), Offset(exL + s, ey - s), strokePaint);
+
+    canvas.drawLine(Offset(exR - s, ey - s), Offset(exR + s, ey + s), strokePaint);
+    canvas.drawLine(Offset(exR - s, ey + s), Offset(exR + s, ey - s), strokePaint);
+
+    double bx = cx;
+    double by = cy + (r / 3);
+
+    Path beak = Path()
+      ..moveTo(bx, by + 3)
+      ..lineTo(bx - 4, by - 2)
+      ..lineTo(bx + 4, by - 2)
+      ..close();
+    
+    canvas.drawPath(beak, fillPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant JunkfeathersLogoPainter old) => old.progress != progress;
 }
 
 class CassetteHomeScreen extends StatefulWidget {
