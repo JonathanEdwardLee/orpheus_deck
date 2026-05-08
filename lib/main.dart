@@ -139,19 +139,327 @@ class OrpheusDeckApp extends StatelessWidget {
           background: Colors.black,
         ),
       ),
-      home: const OrpheusConsole(),
+      initialRoute: '/splash',
+      routes: {
+        '/splash': (context) => const SplashScreen(),
+        '/home': (context) => const CassetteHomeScreen(),
+      },
     );
   }
 }
 
-class OrpheusConsole extends StatefulWidget {
-  const OrpheusConsole({super.key});
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
 
   @override
-  State<OrpheusConsole> createState() => _OrpheusConsoleState();
+  State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _OrpheusConsoleState extends State<OrpheusConsole> {
+class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderStateMixin {
+  late AnimationController _glitchCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _glitchCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 2000));
+    _glitchCtrl.forward();
+    
+    Future.delayed(const Duration(milliseconds: 2500), () {
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, '/home');
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _glitchCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: AnimatedBuilder(
+          animation: _glitchCtrl,
+          builder: (context, child) {
+            double progress = _glitchCtrl.value;
+            double jitterX = 0;
+            if (progress > 0.2 && progress < 0.4) jitterX = (Random().nextDouble() - 0.5) * 10;
+            if (progress > 0.7 && progress < 0.8) jitterX = (Random().nextDouble() - 0.5) * 20;
+            
+            bool showStatic = (progress > 0.3 && progress < 0.35) || (progress > 0.75 && progress < 0.78);
+
+            return Transform.translate(
+              offset: Offset(jitterX, 0),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Image.asset(
+                    'assets/images/chronos_logo.png',
+                    width: 200,
+                    errorBuilder: (context, error, stackTrace) {
+                      return const Text(
+                        "JUNKFEATHERS TECH",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.w900,
+                          fontSize: 24,
+                          letterSpacing: 4,
+                        ),
+                        textAlign: TextAlign.center,
+                      );
+                    },
+                  ),
+                  if (showStatic)
+                    Container(
+                      width: 250,
+                      height: 50,
+                      color: Colors.white24,
+                    )
+                ],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class CassetteHomeScreen extends StatefulWidget {
+  const CassetteHomeScreen({super.key});
+
+  @override
+  State<CassetteHomeScreen> createState() => _CassetteHomeScreenState();
+}
+
+class _CassetteHomeScreenState extends State<CassetteHomeScreen> {
+  String? _lastProjectName;
+  List<String> _allProjects = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _scanProjects();
+  }
+
+  Future<void> _scanProjects() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      
+      final lastFile = File('${dir.path}/OrpheusDeck/last_project.txt');
+      if (await lastFile.exists()) {
+        _lastProjectName = await lastFile.readAsString();
+      }
+
+      final projDir = Directory('${dir.path}/OrpheusDeck');
+      if (await projDir.exists()) {
+        final entities = projDir.listSync();
+        for (var e in entities) {
+          if (e is Directory) {
+             String name = e.path.split(RegExp(r'[/\\]')).last;
+             _allProjects.add(name);
+          }
+        }
+      }
+      
+      if (mounted) setState(() {});
+    } catch(e) {}
+  }
+
+  String _sanitizeName(String input) {
+    String clean = input.replaceAll(RegExp(r'[\\/:*?"<>|]'), '').trim();
+    if (clean.isEmpty) return "SESSION_001";
+    return clean;
+  }
+
+  void _startNewProject() {
+    TextEditingController ctrl = TextEditingController(text: "SESSION_NEW");
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: Colors.black,
+          shape: Border.all(color: Colors.white, width: 2),
+          title: const Text("NEW PROJECT NAME", style: TextStyle(color: Colors.white, fontFamily: 'monospace')),
+          content: TextField(
+            controller: ctrl,
+            style: const TextStyle(color: Colors.white, fontFamily: 'monospace'),
+            decoration: const InputDecoration(
+              enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white54)),
+              focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.white)),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("CANCEL", style: TextStyle(color: Colors.white54, fontFamily: 'monospace')),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                String safeName = _sanitizeName(ctrl.text);
+                Navigator.pushReplacement(
+                  context, 
+                  MaterialPageRoute(builder: (_) => RecorderScreen(projectName: safeName, isNewProject: true))
+                );
+              },
+              child: const Text("START", style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      }
+    );
+  }
+
+  void _loadProject() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: Colors.black,
+          shape: Border.all(color: Colors.white, width: 2),
+          title: const Text("LOAD PROJECT", style: TextStyle(color: Colors.white, fontFamily: 'monospace')),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 300,
+            child: ListView.builder(
+              itemCount: _allProjects.length,
+              itemBuilder: (context, idx) {
+                String name = _allProjects[idx];
+                return ListTile(
+                  title: Text(name, style: const TextStyle(color: Colors.white, fontFamily: 'monospace')),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.pushReplacement(
+                      context, 
+                      MaterialPageRoute(builder: (_) => RecorderScreen(projectName: name, isNewProject: false))
+                    );
+                  },
+                );
+              }
+            )
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("CANCEL", style: TextStyle(color: Colors.white54, fontFamily: 'monospace')),
+            ),
+          ],
+        );
+      }
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    bool hasProjects = _allProjects.isNotEmpty;
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.white, width: 4),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  children: [
+                     Row(
+                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                       children: [
+                         Container(width: 40, height: 40, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2))),
+                         const Text("ORPHEUS DECK", style: TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.w900, fontSize: 18, letterSpacing: 2)),
+                         Container(width: 40, height: 40, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2))),
+                       ]
+                     ),
+                     const SizedBox(height: 12),
+                     const Text("Junkfeathers Tech Multitrack Recorder", style: TextStyle(color: Colors.white54, fontFamily: 'monospace', fontSize: 10), textAlign: TextAlign.center),
+                     const SizedBox(height: 8),
+                     Container(height: 20, width: 120, color: Colors.white24),
+                  ]
+                )
+              ),
+              const SizedBox(height: 48),
+
+              if (_lastProjectName != null && _allProjects.contains(_lastProjectName)) ...[
+                Text("LAST PROJECT: $_lastProjectName", style: const TextStyle(color: Colors.white54, fontFamily: 'monospace', fontSize: 10, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                const SizedBox(height: 8),
+                _MenuBtn("RESUME LAST PROJECT", () {
+                  Navigator.pushReplacement(
+                    context, 
+                    MaterialPageRoute(builder: (_) => RecorderScreen(projectName: _lastProjectName!, isNewProject: false))
+                  );
+                }),
+                const SizedBox(height: 16),
+              ],
+              
+              _MenuBtn("START NEW PROJECT", _startNewProject),
+              
+              if (hasProjects) ...[
+                const SizedBox(height: 16),
+                _MenuBtn("LOAD PROJECT", _loadProject),
+              ]
+            ],
+          )
+        )
+      )
+    );
+  }
+}
+
+class _MenuBtn extends StatelessWidget {
+  final String text;
+  final VoidCallback onTap;
+  const _MenuBtn(this.text, this.onTap);
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        decoration: BoxDecoration(
+          color: Colors.black,
+          border: Border.all(color: Colors.white, width: 2),
+        ),
+        child: Text(text, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontWeight: FontWeight.bold, fontSize: 14)),
+      )
+    );
+  }
+}
+
+
+class RecorderScreen extends StatefulWidget {
+  final String projectName;
+  final bool isNewProject;
+  
+  const RecorderScreen({
+    super.key,
+    required this.projectName,
+    required this.isNewProject,
+  });
+
+  @override
+  State<RecorderScreen> createState() => _RecorderScreenState();
+}
+
+class OrpheusConsole extends RecorderScreen {
+  const OrpheusConsole({super.key, required super.projectName, required super.isNewProject});
+}
+
+class _RecorderScreenState extends State<RecorderScreen> {
   bool _isPlaying = false;
   bool _isRecording = false;
   bool _isExporting = false;
@@ -162,7 +470,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   Timer? _metronomeTimer;
   Timer? _autosaveTimer;
   
-  String _projectName = "SESSION_001";
+  late String _projectName;
   DateTime _sessionCreatedAt = DateTime.now();
 
   final List<bool> _armedTracks = [false, false, false, false];
@@ -197,10 +505,16 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   @override
   void initState() {
     super.initState();
+    _projectName = widget.projectName;
     _metronomePlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
     _metronomePlayer.setPlayerMode(PlayerMode.lowLatency);
     _initMetronome();
-    _loadSession();
+    
+    if (widget.isNewProject) {
+      _initializeNewProject(_projectName);
+    } else {
+      _loadSession();
+    }
     
     _autosaveTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
       if (_isPlaying || _isRecording) _saveSession();
@@ -213,10 +527,19 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     _metronomeTimer?.cancel();
     _autosaveTimer?.cancel();
     _amplitudeSub?.cancel();
+    
+    if (_isRecording) {
+      _recorder.stop();
+    }
     _recorder.dispose();
+    
     _metronomePlayer.dispose();
     for (var player in _players) {
       player.dispose();
+    }
+    
+    if (_isExporting && _exportSessionId != null) {
+      FFmpegKit.cancel(_exportSessionId);
     }
     super.dispose();
   }
@@ -302,17 +625,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     _metronomeTimer?.cancel();
   }
 
-  Future<String> _getLastProjectName() async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/OrpheusDeck/last_project.txt');
-      if (await file.exists()) {
-        return await file.readAsString();
-      }
-    } catch (e) {}
-    return "SESSION_001";
-  }
-
   Future<void> _setLastProjectName(String name) async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -373,9 +685,30 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
     } catch (e) {}
   }
 
+  Future<void> _initializeNewProject(String name) async {
+    _projectName = name;
+    _sessionCreatedAt = DateTime.now();
+    for (int i = 0; i < 4; i++) {
+      _trackFiles[i] = null;
+      _armedTracks[i] = false;
+      _trackVolumes[i] = 1.0;
+      _trackMutes[i] = false;
+      _trackSolos[i] = false;
+    }
+    _waveformCache.clear();
+    _exports.clear();
+    _headphonesConfirmed = false;
+    _recordDuration = 0;
+    _playbackProgress = 0.0;
+    _playbackMs = 0;
+    _lastUndo.clear();
+    
+    _updateMixerState();
+    await _saveSession();
+  }
+
   Future<void> _loadSession() async {
     try {
-      _projectName = await _getLastProjectName();
       await _cleanTrash();
       
       final dir = await getApplicationDocumentsDirectory();
@@ -420,6 +753,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       _lastUndo.clear();
       await _recoverOrphanedRecordings();
       _updateMixerState();
+      await _setLastProjectName(_projectName);
     } catch (e) {
       debugPrint("Orpheus Deck: Error loading session: $e");
     }
@@ -528,6 +862,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
           setState(() {
              _projectName = _lastUndo.oldName!;
           });
+          await _setLastProjectName(_projectName);
           _showSnackbar("PROJECT RENAME UNDONE");
         }
       } catch (e) {
@@ -542,18 +877,19 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   }
 
   Future<void> _renameProject(String newName) async {
-    if (newName.trim().isEmpty || newName == _projectName) return;
+    String safeName = newName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '').trim();
+    if (safeName.isEmpty || safeName == _projectName) return;
     _stop();
     try {
       final dir = await getApplicationDocumentsDirectory();
       final oldDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
-      final newDir = Directory('${dir.path}/OrpheusDeck/$newName');
+      final newDir = Directory('${dir.path}/OrpheusDeck/$safeName');
       
       if (await oldDir.exists()) {
         _lastUndo.clear();
         _lastUndo.action = UndoAction.rename;
         _lastUndo.oldName = _projectName;
-        _lastUndo.newName = newName;
+        _lastUndo.newName = safeName;
 
         await oldDir.rename(newDir.path);
         
@@ -561,7 +897,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
         for (int i = 0; i < 4; i++) {
           if (_trackFiles[i] != null) {
             String oldPath = _trackFiles[i]!;
-            String newPath = oldPath.replaceFirst('/OrpheusDeck/$_projectName/', '/OrpheusDeck/$newName/');
+            String newPath = oldPath.replaceFirst('/OrpheusDeck/$_projectName/', '/OrpheusDeck/$safeName/');
             _trackFiles[i] = newPath;
             if (_waveformCache.containsKey(oldPath)) {
               newCache[newPath] = _waveformCache[oldPath]!;
@@ -573,7 +909,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
 
         List<String> newExports = [];
         for (String exportPath in _exports) {
-          String newPath = exportPath.replaceFirst('/OrpheusDeck/$_projectName/', '/OrpheusDeck/$newName/');
+          String newPath = exportPath.replaceFirst('/OrpheusDeck/$_projectName/', '/OrpheusDeck/$safeName/');
           newExports.add(newPath);
         }
         _exports.clear();
@@ -581,7 +917,7 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       }
       
       setState(() {
-        _projectName = newName;
+        _projectName = safeName;
       });
       await _saveSession();
       _showSnackbar("PROJECT RENAMED");
@@ -591,29 +927,12 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   }
 
   Future<void> _newProject(String name) async {
-    if (name.trim().isEmpty) return;
+    String safeName = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '').trim();
+    if (safeName.isEmpty) safeName = "SESSION_001";
     await _cleanTrash();
     _stop();
-    setState(() {
-      _projectName = name;
-      _sessionCreatedAt = DateTime.now();
-      for (int i = 0; i < 4; i++) {
-        _trackFiles[i] = null;
-        _armedTracks[i] = false;
-        _trackVolumes[i] = 1.0;
-        _trackMutes[i] = false;
-        _trackSolos[i] = false;
-      }
-      _waveformCache.clear();
-      _exports.clear();
-      _headphonesConfirmed = false;
-      _recordDuration = 0;
-      _playbackProgress = 0.0;
-      _playbackMs = 0;
-      _lastUndo.clear();
-    });
-    _updateMixerState();
-    await _saveSession();
+    await _initializeNewProject(safeName);
+    setState(() {});
     _showSnackbar("NEW PROJECT CREATED");
   }
 
@@ -953,6 +1272,12 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
                       }),
                     );
                   }).toList(),
+                const SizedBox(height: 24),
+                _menuButton("EXIT TO MENU", () {
+                  _stop();
+                  Navigator.pop(context); 
+                  Navigator.pushReplacementNamed(context, '/home');
+                }),
               ],
             ),
           ),
@@ -1028,8 +1353,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
       ),
     );
   }
-
-  // --- Transport, Audio & Mixer Logic ---
 
   void _saveMixerUndo() {
     _lastUndo.clear();
@@ -1425,7 +1748,6 @@ class _OrpheusConsoleState extends State<OrpheusConsole> {
   }
 }
 
-/// The OLED display header showing timer, project name, and status.
 class DeckHeader extends StatelessWidget {
   final String statusLabel;
   final int duration;
@@ -1462,7 +1784,6 @@ class DeckHeader extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Branding & Project Name
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1536,7 +1857,6 @@ class DeckHeader extends StatelessWidget {
             ],
           ),
           
-          // Timer and Status
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -1572,7 +1892,6 @@ class DeckHeader extends StatelessWidget {
   }
 }
 
-/// A single track strip with an arm button, real waveform view, clear option, and basic mixer controls.
 class TrackStrip extends StatelessWidget {
   final int trackNumber;
   final bool isArmed;
@@ -1582,7 +1901,6 @@ class TrackStrip extends StatelessWidget {
   final List<double> amplitudes;
   final double playbackProgress;
   
-  // Mixer properties
   final double volume;
   final bool isMuted;
   final bool isSoloed;
@@ -1618,7 +1936,7 @@ class TrackStrip extends StatelessWidget {
     bool hasAudio = filePath != null;
     if (isRecording) {
       if (isArmed) return true;
-      if (hasAudio) return true; // Overdub playback
+      if (hasAudio) return true; 
       return false;
     } else {
       return isPlaying && hasAudio;
@@ -1634,10 +1952,8 @@ class TrackStrip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Column(
         children: [
-          // Main Deck Row
           Row(
             children: [
-              // Track Label & File info
               SizedBox(
                 width: 65,
                 child: Column(
@@ -1684,7 +2000,6 @@ class TrackStrip extends StatelessWidget {
                 ),
               ),
               
-              // Arm Button
               GestureDetector(
                 onTap: onArmToggled,
                 child: Container(
@@ -1709,7 +2024,6 @@ class TrackStrip extends StatelessWidget {
                 ),
               ),
 
-              // Reusable Waveform Widget
               Expanded(
                 child: Container(
                   height: 40,
@@ -1729,7 +2043,6 @@ class TrackStrip extends StatelessWidget {
                 ),
               ),
               
-              // Clear Button
               if (hasAudio)
                 GestureDetector(
                   onTap: onClear,
@@ -1759,12 +2072,10 @@ class TrackStrip extends StatelessWidget {
           
           const SizedBox(height: 8),
 
-          // Mixer Controls Row
           Row(
             children: [
-              const SizedBox(width: 65), // Alignment spacer
+              const SizedBox(width: 65), 
               
-              // Mute Button
               GestureDetector(
                 onTap: onMuteToggled,
                 child: Container(
@@ -1789,7 +2100,6 @@ class TrackStrip extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               
-              // Solo Button
               GestureDetector(
                 onTap: onSoloToggled,
                 child: Container(
@@ -1814,7 +2124,6 @@ class TrackStrip extends StatelessWidget {
               ),
               const SizedBox(width: 12),
               
-              // Volume Slider
               const Text("VOL", style: TextStyle(color: Colors.white54, fontFamily: 'monospace', fontSize: 10)),
               Expanded(
                 child: SliderTheme(
@@ -1836,7 +2145,6 @@ class TrackStrip extends StatelessWidget {
                 ),
               ),
               
-              // Spacing alignment for right side to match clear button
               if (hasAudio) const SizedBox(width: 48),
             ],
           ),
@@ -1846,7 +2154,6 @@ class TrackStrip extends StatelessWidget {
   }
 }
 
-/// A reusable widget that renders a list of audio amplitudes into a monochrome waveform.
 class WaveformDisplay extends StatelessWidget {
   final List<double> amplitudes;
   final bool isLive; 
@@ -1879,7 +2186,6 @@ class WaveformDisplay extends StatelessWidget {
   }
 }
 
-/// Lightweight custom painter optimized for Android to draw waveform bars and a playhead.
 class WaveformPainter extends CustomPainter {
   final List<double> amplitudes;
   final bool isLive;
@@ -1980,7 +2286,6 @@ class WaveformPainter extends CustomPainter {
   }
 }
 
-/// The bottom hardware buttons for transport control.
 class TransportControls extends StatelessWidget {
   final bool isPlaying;
   final bool isRecording;
@@ -2045,7 +2350,6 @@ class TransportControls extends StatelessWidget {
   }
 }
 
-/// A custom button widget for transport controls, styled like Adafruit hardware switches.
 class TransportButton extends StatelessWidget {
   final String label;
   final IconData icon;
