@@ -13,6 +13,8 @@
 /// - minimal editing
 /// - hardware-style interaction
 
+library;
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -610,13 +612,7 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
                                                     fontSize: 10),
                                                 textAlign: TextAlign.center),
                                           ),
-                                          const SizedBox(height: 8),
-                                          const Text("CASSETTE_LAYOUT_V2",
-                                              style: TextStyle(
-                                                  color: Colors.white54,
-                                                  fontFamily: 'monospace',
-                                                  fontSize: 8),
-                                              textAlign: TextAlign.center),
+
                                         ]))
                               ]));
                         }),
@@ -646,13 +642,6 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
                       const SizedBox(height: 16),
                       _MenuBtn("LOAD PROJECT", _loadProject),
                     ],
-                    const SizedBox(height: 32),
-                    const Text("BUILD: APK_4_DEBUG",
-                        style: TextStyle(
-                            color: Colors.white24,
-                            fontFamily: 'monospace',
-                            fontSize: 8),
-                        textAlign: TextAlign.center),
                   ],
                 ))));
   }
@@ -885,6 +874,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
   final Map<String, List<double>> _waveformCache = {};
   final List<double> _liveAmplitudes = [];
   StreamSubscription<Amplitude>? _amplitudeSub;
+  /// One subscription per track player, watching for natural playback completion.
+  final List<StreamSubscription?> _playerCompletionSubs = [null, null, null, null];
 
   double _playbackProgress = 0.0;
   int _playbackMs = 0;
@@ -915,6 +906,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _metronomeTimer?.cancel();
     _autosaveTimer?.cancel();
     _amplitudeSub?.cancel();
+    for (var sub in _playerCompletionSubs) {
+      sub?.cancel();
+    }
 
     if (_isRecording) {
       _recorder.stop();
@@ -1764,11 +1758,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
                       );
                     }),
                   const SizedBox(height: 24),
-                  _menuButton("[DBG] TEST PLAY ALL TRACKS", () {
-                    Navigator.pop(context);
-                    _debugTestPlayAll();
-                  }),
-                  const SizedBox(height: 8),
                   _menuButton("EXIT TO MENU", () {
                     _stop();
                     Navigator.pop(context);
@@ -2050,10 +2039,44 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
       _startTicker();
       _startMetronomeTicker();
+      _attachPlayerCompletionListeners(readyIndices);
     }
   }
 
-  /// Debug: bypass solo/mute and play every non-empty track at full volume.
+  /// Subscribe to each active player's processingStateStream.
+  /// When ALL active players reach [ProcessingState.completed], trigger _stop()
+  /// so the UI never stays stuck in PLAY mode after natural playback end.
+  void _attachPlayerCompletionListeners(List<int> activeIndices) {
+    // Cancel any existing subscriptions first.
+    for (int i = 0; i < 4; i++) {
+      _playerCompletionSubs[i]?.cancel();
+      _playerCompletionSubs[i] = null;
+    }
+    if (activeIndices.isEmpty) return;
+
+    // Track how many players have finished.
+    int completedCount = 0;
+    final int total = activeIndices.length;
+
+    for (int i in activeIndices) {
+      _playerCompletionSubs[i] =
+          _trackPlayers[i].processingStateStream.listen((state) {
+        if (state == ja.ProcessingState.completed) {
+          debugPrint('Orpheus Deck: TRK $i reached ProcessingState.completed');
+          completedCount++;
+          if (completedCount >= total && _isPlaying && !_isRecording) {
+            debugPrint(
+                'Orpheus Deck: All $total active players completed — auto-stopping');
+            _stop();
+          }
+        }
+      });
+    }
+  }
+
+  /// Debug helper: bypass solo/mute and play every non-empty track at full volume.
+  /// Not exposed in the UI — accessible via code for diagnostics only.
+  // ignore: unused_element
   Future<void> _debugTestPlayAll() async {
     debugPrint("Orpheus Deck: TEST PLAY ALL TRACKS");
     for (var p in _trackPlayers) {
