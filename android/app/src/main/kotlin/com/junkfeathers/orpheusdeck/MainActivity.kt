@@ -1,4 +1,4 @@
-package com.example.orpheus_deck
+package com.junkfeathers.orpheusdeck
 
 import io.flutter.embedding.android.FlutterActivity
 
