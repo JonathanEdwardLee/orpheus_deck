@@ -28,7 +28,9 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:just_audio/just_audio.dart' as ja;
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+import 'package:open_file/open_file.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:audio_session/audio_session.dart' as as_sess;
 
@@ -1370,7 +1372,93 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _showSnackbar("NEW PROJECT CREATED");
   }
 
-  Future<void> _exportMix(bool isYoutubeMaster) async {
+  Future<void> _deleteExportIfExists(String path) async {
+    try {
+      final f = File(path);
+      if (await f.exists()) await f.delete();
+    } catch (e) {
+      debugPrint('Orpheus Deck: delete export failed: $e');
+    }
+  }
+
+  Future<int?> _awaitStableExportSize(File file) async {
+    const attempts = 10;
+    const delay = Duration(milliseconds: 50);
+    int? last;
+    for (var i = 0; i < attempts; i++) {
+      if (!await file.exists()) return null;
+      final len = await file.length();
+      if (last != null && len == last && len > 48) return len;
+      last = len;
+      await Future<void>.delayed(delay);
+    }
+    return await file.exists() ? await file.length() : null;
+  }
+
+  bool _wavRiffWaveHeaderLooksValid(File file) {
+    RandomAccessFile? raf;
+    try {
+      if (file.lengthSync() < 12) return false;
+      raf = file.openSync(mode: FileMode.read);
+      final b = raf.readSync(12);
+      if (b.length < 12) return false;
+      final riff = String.fromCharCodes(b.sublist(0, 4));
+      final wave = String.fromCharCodes(b.sublist(8, 12));
+      return riff == 'RIFF' && wave == 'WAVE';
+    } catch (e) {
+      debugPrint('Orpheus Deck: WAV header check failed: $e');
+      return false;
+    } finally {
+      raf?.closeSync();
+    }
+  }
+
+  Future<({bool ok, String detail, String? durationSec})> _verifyExportedWav(
+      String path) async {
+    final file = File(path);
+    final size = await _awaitStableExportSize(file);
+    debugPrint('Orpheus Deck: export output path: $path');
+    debugPrint('Orpheus Deck: export output size (stable): $size bytes');
+    if (size == null || size <= 48) {
+      return (
+        ok: false,
+        detail: 'missing_or_tiny_file size=$size',
+        durationSec: null,
+      );
+    }
+    if (!_wavRiffWaveHeaderLooksValid(file)) {
+      return (ok: false, detail: 'invalid_riff_wave_header', durationSec: null);
+    }
+    try {
+      final session = await FFprobeKit.getMediaInformation(path);
+      final info = session.getMediaInformation();
+      if (info == null) {
+        return (ok: false, detail: 'ffprobe_no_media_information', durationSec: null);
+      }
+      final durStr = info.getDuration();
+      final durSec = double.tryParse(durStr ?? '');
+      debugPrint(
+          'Orpheus Deck: ffprobe format=${info.getFormat()} duration=$durStr format_size=${info.getSize()}');
+      final audioStreams =
+          info.getStreams().where((s) => s.getType() == 'audio').toList();
+      final a0 = audioStreams.isNotEmpty ? audioStreams.first : null;
+      final codec = a0?.getCodec();
+      final sampleRate = a0?.getSampleRate();
+      debugPrint(
+          'Orpheus Deck: ffprobe audio0 codec=$codec sample_rate=$sampleRate');
+      final codecOk = codec == 'pcm_s16le';
+      final durOk = durSec != null && durSec > 0.004;
+      final ok = codecOk && durOk;
+      final detail =
+          'codec=$codec duration=$durStr codecOk=$codecOk durOk=$durOk';
+      return (ok: ok, detail: detail, durationSec: durStr);
+    } catch (e, st) {
+      debugPrint('Orpheus Deck: ffprobe error: $e\n$st');
+      return (ok: false, detail: 'ffprobe: $e', durationSec: null);
+    }
+  }
+
+  Future<void> _exportMix(bool isMasterMix) async {
     if (_isRecording || _isPlaying) _stop();
 
     setState(() {
@@ -1382,9 +1470,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
       final projDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
       if (!await projDir.exists()) await projDir.create(recursive: true);
 
+      final String exportFolderPath = projDir.path;
+      debugPrint('Orpheus Deck: EXPORT FOLDER (absolute): $exportFolderPath');
+
       String timestamp = (DateTime.now().millisecondsSinceEpoch).toString();
-      String outName = isYoutubeMaster
-          ? "youtube_master_$timestamp.wav"
+      String outName = isMasterMix
+          ? "mastermix_$timestamp.wav"
           : "raw_mix_$timestamp.wav";
       String outPath = '${projDir.path}/$outName';
 
@@ -1436,7 +1527,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
         outPad = "[mix]";
       }
 
-      if (isYoutubeMaster) {
+      if (isMasterMix) {
         filterGraph += ";${outPad}loudnorm=I=-14:TP=-1:LRA=11[master]";
         outPad = "[master]";
       }
@@ -1447,32 +1538,88 @@ class _RecorderScreenState extends State<RecorderScreen> {
         filterGraph,
         "-map",
         outPad,
-        outPath
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "44100",
+        "-ac",
+        "1",
+        "-f",
+        "wav",
+        "-y",
+        outPath,
       ];
 
+      final String cmdLogged = command
+          .map((a) => (a.contains(' ') || a.contains('"'))
+              ? '"${a.replaceAll('"', r'\"')}"'
+              : a)
+          .join(' ');
+      debugPrint('Orpheus Deck: FFmpeg full command: ffmpeg $cmdLogged');
+
       FFmpegKit.executeWithArgumentsAsync(command, (session) async {
-        final returnCode = await session.getReturnCode();
-        if (ReturnCode.isSuccess(returnCode)) {
+        try {
+          final returnCode = await session.getReturnCode();
+          final rcVal = returnCode?.getValue();
+          final logText = await session.getLogsAsString();
+          debugPrint('Orpheus Deck: FFmpeg exit code: $rcVal');
+          if (logText.isNotEmpty) {
+            debugPrint('Orpheus Deck: FFmpeg output:\n$logText');
+          }
+
+          if (ReturnCode.isCancel(returnCode)) {
+            await _deleteExportIfExists(outPath);
+            if (mounted) _showSnackbar("EXPORT CANCELED");
+            return;
+          }
+          if (!ReturnCode.isSuccess(returnCode)) {
+            await _deleteExportIfExists(outPath);
+            if (mounted) {
+              _showSnackbar("ERR: EXPORT FAILED (ffmpeg $rcVal)");
+            }
+            return;
+          }
+
+          final ver = await _verifyExportedWav(outPath);
+          debugPrint(
+              'Orpheus Deck: export verify ok=${ver.ok} detail=${ver.detail} duration=${ver.durationSec ?? "?"}');
+
+          if (!ver.ok) {
+            await _deleteExportIfExists(outPath);
+            if (mounted) _showSnackbar("ERR: EXPORT VERIFY FAILED");
+            return;
+          }
+
+          if (!mounted) return;
           setState(() {
             _exports.add(outPath);
           });
-          _saveSession();
-          _showExportSuccessDialog(outPath);
-        } else if (ReturnCode.isCancel(returnCode)) {
-          final file = File(outPath);
-          if (file.existsSync()) file.deleteSync();
-          _showSnackbar("EXPORT CANCELED");
-        } else {
-          _showSnackbar("ERR: EXPORT FAILED");
+          await _saveSession();
+          if (!mounted) return;
+          _showExportSuccessDialog(
+            filePath: outPath,
+            exportFolderPath: exportFolderPath,
+            shareEnabled: true,
+            durationSec: ver.durationSec,
+          );
+        } catch (e, st) {
+          debugPrint('Orpheus Deck: export callback error: $e\n$st');
+          await _deleteExportIfExists(outPath);
+          if (mounted) _showSnackbar("ERR: EXPORT FAILED");
+        } finally {
+          if (mounted) {
+            setState(() {
+              _isExporting = false;
+              _exportSessionId = null;
+            });
+          }
         }
-        setState(() {
-          _isExporting = false;
-          _exportSessionId = null;
-        });
       }).then((session) {
         _exportSessionId = session.getSessionId();
       });
     } catch (e) {
+      debugPrint('Orpheus Deck: export setup error: $e');
       _showSnackbar("ERR: EXPORT FAILED");
       setState(() {
         _isExporting = false;
@@ -1480,30 +1627,57 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
   }
 
-  void _showExportSuccessDialog(String path) {
+  void _showExportSuccessDialog({
+    required String filePath,
+    required String exportFolderPath,
+    required bool shareEnabled,
+    String? durationSec,
+  }) {
     showDialog(
         context: context,
         builder: (context) {
+          final String body =
+              "EXPORT FOLDER (absolute):\n$exportFolderPath\n\nFILE:\n$filePath\n\nDuration (ffprobe): ${durationSec ?? '?'}\n";
           return AlertDialog(
             backgroundColor: Colors.black,
             shape: Border.all(color: Colors.white, width: 2),
             title: const Text("EXPORT COMPLETE",
                 style: TextStyle(color: Colors.white, fontFamily: 'monospace')),
             content: SelectableText(
-              "Saved to:\n$path",
+              body,
               style: const TextStyle(
                   color: Colors.white54, fontFamily: 'monospace', fontSize: 10),
             ),
             actions: [
+              if (shareEnabled)
+                TextButton(
+                  onPressed: () {
+                    if (!_quickExportLooksValidSync(File(filePath))) {
+                      _showSnackbar("ERR: EXPORT FILE INVALID");
+                      return;
+                    }
+                    SharePlus.instance.share(ShareParams(
+                        files: [XFile(filePath)],
+                        text: 'Exported from Orpheus Deck'));
+                  },
+                  child: const Text("SHARE",
+                      style: TextStyle(
+                          color: Colors.white, fontFamily: 'monospace')),
+                ),
               TextButton(
-                onPressed: () {
-                  SharePlus.instance.share(ShareParams(
-                      files: [XFile(path)],
-                      text: 'Exported from Orpheus Deck'));
+                onPressed: () async {
+                  debugPrint(
+                      'Orpheus Deck: OPEN EXPORT FOLDER: $exportFolderPath');
+                  final OpenResult r = await OpenFile.open(exportFolderPath);
+                  debugPrint(
+                      'Orpheus Deck: OpenFile result type=${r.type} message=${r.message}');
+                  if (r.type != ResultType.done && context.mounted) {
+                    _showSnackbar("COULD NOT OPEN FOLDER — PATH IN LOG");
+                  }
                 },
-                child: const Text("SHARE",
+                child: const Text("OPEN EXPORT FOLDER",
                     style: TextStyle(
-                        color: Colors.white, fontFamily: 'monospace')),
+                        color: Colors.white70, fontFamily: 'monospace')),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(context),
@@ -1557,6 +1731,11 @@ class _RecorderScreenState extends State<RecorderScreen> {
               TextButton(
                 onPressed: () {
                   Navigator.pop(context);
+                  final file = File(path);
+                  if (!_quickExportLooksValidSync(file)) {
+                    _showSnackbar("ERR: EXPORT FILE INVALID OR MISSING");
+                    return;
+                  }
                   SharePlus.instance.share(ShareParams(
                       files: [XFile(path)],
                       text: 'Exported from Orpheus Deck'));
@@ -1570,6 +1749,16 @@ class _RecorderScreenState extends State<RecorderScreen> {
             ],
           );
         });
+  }
+
+  bool _quickExportLooksValidSync(File file) {
+    try {
+      if (!file.existsSync()) return false;
+      if (file.lengthSync() <= 48) return false;
+      return _wavRiffWaveHeaderLooksValid(file);
+    } catch (_) {
+      return false;
+    }
   }
 
   void _showMetronomeMenu() {
@@ -1726,7 +1915,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
                     _exportMix(false);
                   }),
                   const SizedBox(height: 8),
-                  _menuButton("EXPORT YT MASTER", () {
+                  _menuButton("EXPORT MASTERMIX", () {
                     Navigator.pop(context);
                     _exportMix(true);
                   }),
