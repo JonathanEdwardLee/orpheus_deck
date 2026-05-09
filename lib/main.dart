@@ -9,6 +9,7 @@ import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:just_audio/just_audio.dart' as ja;
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:share_plus/share_plus.dart';
@@ -300,7 +301,8 @@ class JunkfeathersLogoPainter extends CustomPainter {
       }
 
       final blackPaint = Paint()..color = Colors.black;
-      final fastLinePaint = Paint()..color = Colors.white.withValues(alpha: opacity);
+      final fastLinePaint = Paint()
+        ..color = Colors.white.withValues(alpha: opacity);
 
       for (int y = 0; y < 64;) {
         int h = globalR.nextInt(9) + 2;
@@ -852,7 +854,11 @@ class _RecorderScreenState extends State<RecorderScreen> {
   String _woodPath = '';
 
   final AudioRecorder _recorder = AudioRecorder();
-  final List<AudioPlayer> _players = List.generate(4, (_) => AudioPlayer());
+  /// Independent just_audio players — one per track. Using just_audio
+  /// instead of audioplayers because just_audio handles concurrent
+  /// Android AudioFocus correctly without stealing the session from siblings.
+  final List<ja.AudioPlayer> _trackPlayers =
+      List.generate(4, (_) => ja.AudioPlayer());
 
   final Map<String, List<double>> _waveformCache = {};
   final List<double> _liveAmplitudes = [];
@@ -894,7 +900,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _recorder.dispose();
 
     _metronomePlayer.dispose();
-    for (var player in _players) {
+    for (var player in _trackPlayers) {
       player.dispose();
     }
 
@@ -1731,10 +1737,15 @@ class _RecorderScreenState extends State<RecorderScreen> {
                         child: _menuButton(filename, () {
                           Navigator.pop(context);
                           _showExportOptionsDialog(path);
-                         }),
+                        }),
                       );
                     }),
                   const SizedBox(height: 24),
+                  _menuButton("[DBG] TEST PLAY ALL TRACKS", () {
+                    Navigator.pop(context);
+                    _debugTestPlayAll();
+                  }),
+                  const SizedBox(height: 8),
                   _menuButton("EXIT TO MENU", () {
                     _stop();
                     Navigator.pop(context);
@@ -1857,8 +1868,17 @@ class _RecorderScreenState extends State<RecorderScreen> {
           targetVolume = _trackVolumes[i];
         }
       }
-      _players[i].setVolume(targetVolume);
+      // Only update volume if the player is actually active.
+      _trackPlayers[i].setVolume(targetVolume);
     }
+  }
+
+  bool _isTrackAudible(int i) {
+    bool anySolo = _trackSolos.contains(true);
+    if (anySolo) {
+      return _trackSolos[i] && !_trackMutes[i];
+    }
+    return !_trackMutes[i];
   }
 
   void _setVolume(int index, double value) {
@@ -1956,37 +1976,87 @@ class _RecorderScreenState extends State<RecorderScreen> {
         _playbackProgress = 0.0;
       });
 
-      _updateMixerState();
-      bool anySolo = _trackSolos.contains(true);
+      // Stop and reset all just_audio track players.
+      for (var p in _trackPlayers) {
+        await p.stop();
+        await p.seek(Duration.zero);
+      }
 
+      // Prepare sources. setFilePath must complete before play().
+      final List<int> readyIndices = [];
       for (int i = 0; i < 4; i++) {
-        if (_trackFiles[i] != null) {
-          final file = File(_trackFiles[i]!);
-          bool exists = file.existsSync();
-          int size = exists ? file.lengthSync() : 0;
-          bool isAudible = false;
-          if (anySolo) {
-            if (_trackSolos[i] && !_trackMutes[i]) isAudible = true;
-          } else {
-            if (!_trackMutes[i]) isAudible = true;
-          }
+        if (_trackFiles[i] == null) continue;
+        final file = File(_trackFiles[i]!);
+        final bool exists = file.existsSync();
+        final int size = exists ? file.lengthSync() : 0;
+        final bool audible = _isTrackAudible(i);
+        final double vol = audible ? _trackVolumes[i] : 0.0;
 
+        debugPrint(
+            "Orpheus Deck: PLAY TRK $i | path: ${_trackFiles[i]} | exists: $exists | size: $size | mute: ${_trackMutes[i]} | solo: ${_trackSolos[i]} | vol: $vol | audible: $audible | player: ${_trackPlayers[i].hashCode}");
+
+        if (!exists || size == 0) {
+          debugPrint("Orpheus Deck: PLAY TRK $i SKIP - missing/empty");
+          continue;
+        }
+        if (!audible) {
+          debugPrint("Orpheus Deck: PLAY TRK $i SKIP - not audible (muted/solo)");
+          continue;
+        }
+        try {
+          await _trackPlayers[i].setFilePath(_trackFiles[i]!);
+          await _trackPlayers[i].setVolume(vol);
           debugPrint(
-              "Orpheus Deck: PLAY TRK $i | file: ${_trackFiles[i]} | exists: $exists | size: $size | mute: ${_trackMutes[i]} | solo: ${_trackSolos[i]} | audible: $isAudible");
-
-          if (exists) {
-            try {
-              await _players[i].setSourceDeviceFile(_trackFiles[i]!);
-              await _players[i].resume();
-            } catch (e) {
-              debugPrint("Orpheus Deck: PLAY TRK $i ERROR - $e");
-            }
-          }
+              "Orpheus Deck: PLAY TRK $i setFilePath OK | state: ${_trackPlayers[i].processingState}");
+          readyIndices.add(i);
+        } catch (e) {
+          debugPrint("Orpheus Deck: PLAY TRK $i setFilePath ERROR - $e");
         }
       }
+
+      // Fire play() on all ready players simultaneously.
+      debugPrint(
+          "Orpheus Deck: Starting ${readyIndices.length} just_audio players: $readyIndices");
+      try {
+        await Future.wait(readyIndices.map((i) => _trackPlayers[i].play()));
+        debugPrint("Orpheus Deck: All players play() OK");
+      } catch (e) {
+        debugPrint("Orpheus Deck: play() ERROR - $e");
+      }
+
       _startTicker();
       _startMetronomeTicker();
     }
+  }
+
+  /// Debug: bypass solo/mute and play every non-empty track at full volume.
+  Future<void> _debugTestPlayAll() async {
+    debugPrint("Orpheus Deck: TEST PLAY ALL TRACKS");
+    for (var p in _trackPlayers) {
+      await p.stop();
+      await p.seek(Duration.zero);
+    }
+    final List<int> readyIndices = [];
+    for (int i = 0; i < 4; i++) {
+      if (_trackFiles[i] == null) continue;
+      final file = File(_trackFiles[i]!);
+      if (!file.existsSync()) continue;
+      debugPrint(
+          "Orpheus Deck: TEST TRK $i | ${_trackFiles[i]} | ${file.lengthSync()} bytes | player: ${_trackPlayers[i].hashCode}");
+      try {
+        await _trackPlayers[i].setFilePath(_trackFiles[i]!);
+        await _trackPlayers[i].setVolume(1.0);
+        debugPrint(
+            "Orpheus Deck: TEST TRK $i setFilePath OK | state: ${_trackPlayers[i].processingState}");
+        readyIndices.add(i);
+      } catch (e) {
+        debugPrint("Orpheus Deck: TEST TRK $i ERROR - $e");
+      }
+    }
+    debugPrint(
+        "Orpheus Deck: TEST firing play() on ${readyIndices.length} players: $readyIndices");
+    await Future.wait(readyIndices.map((i) => _trackPlayers[i].play()));
+    debugPrint("Orpheus Deck: TEST PLAY complete");
   }
 
   void _showHeadphonesWarning() {
@@ -2075,12 +2145,46 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
       _updateMixerState();
 
+      // Stop all just_audio track players and reset position.
+      for (var p in _trackPlayers) {
+        await p.stop();
+        await p.seek(Duration.zero);
+      }
+
+      // Prepare overdub backing tracks with just_audio.
+      final List<int> overdubIndices = [];
       for (int i = 0; i < 4; i++) {
-        if (_trackFiles[i] != null && i != armedIndex) {
-          await _players[i].setSourceDeviceFile(_trackFiles[i]!);
-          await _players[i].resume();
+        if (_trackFiles[i] == null || i == armedIndex) continue;
+        final file = File(_trackFiles[i]!);
+        final bool exists = file.existsSync();
+        final int size = exists ? file.lengthSync() : 0;
+        final bool audible = _isTrackAudible(i);
+        final double vol = audible ? _trackVolumes[i] : 0.0;
+
+        debugPrint(
+            "Orpheus Deck: OVERDUB TRK $i | path: ${_trackFiles[i]} | exists: $exists | size: $size | audible: $audible | vol: $vol");
+
+        if (!exists || size == 0) continue;
+        if (!audible) {
+          debugPrint("Orpheus Deck: OVERDUB TRK $i SKIP - not audible");
+          continue;
+        }
+        try {
+          await _trackPlayers[i].setFilePath(_trackFiles[i]!);
+          await _trackPlayers[i].setVolume(vol);
+          debugPrint(
+              "Orpheus Deck: OVERDUB TRK $i setFilePath OK | state: ${_trackPlayers[i].processingState}");
+          overdubIndices.add(i);
+        } catch (e) {
+          debugPrint("Orpheus Deck: OVERDUB TRK $i setFilePath ERROR - $e");
         }
       }
+
+      // Start backing track playback, then arm the recorder.
+      debugPrint(
+          "Orpheus Deck: OVERDUB - starting ${overdubIndices.length} backing tracks: $overdubIndices");
+      await Future.wait(overdubIndices.map((i) => _trackPlayers[i].play()));
+      debugPrint("Orpheus Deck: OVERDUB backing tracks started");
 
       await _recorder.start(
           const RecordConfig(
@@ -2155,7 +2259,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
       _liveAmplitudes.clear();
     }
 
-    for (var player in _players) {
+    for (var player in _trackPlayers) {
       await player.stop();
     }
 
