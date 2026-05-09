@@ -30,6 +30,7 @@ import 'package:just_audio/just_audio.dart' as ja;
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:audio_session/audio_session.dart' as as_sess;
 
 void main() {
   runApp(const OrpheusDeckApp());
@@ -888,6 +889,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _projectName = widget.projectName;
     _metronomePlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
     _initMetronome();
+    _initAudioSession();
 
     if (widget.isNewProject) {
       _initializeNewProject(_projectName);
@@ -1763,6 +1765,11 @@ class _RecorderScreenState extends State<RecorderScreen> {
                     Navigator.pop(context);
                     Navigator.pushReplacementNamed(context, '/home');
                   }),
+                  const SizedBox(height: 24),
+                  _menuButton("TEST OVERDUB ENGINE", () {
+                    Navigator.pop(context);
+                    _testOverdubEngine();
+                  }),
                 ],
               ),
             ),
@@ -2227,21 +2234,19 @@ class _RecorderScreenState extends State<RecorderScreen> {
         }
       }
 
-      // ── OVERDUB LAUNCH ───────────────────────────────────────────────────
-      // Strategy: prepare everything (setFilePath, recorder path) while stopped,
-      // then fire play() and recorder.start() inside a single Future.wait so the
-      // OS scheduler dispatches them as close together as possible.
-      // A Stopwatch measures the real gap and stores it as _trackOffsets.
-
+      // ── OVERDUB LAUNCH (FIXED SEQUENCING) ────────────────────────────────
+      // Strategy: 
+      // 1. Prepare backing players (seek zero, set volume).
+      // 2. Start recorder and WAIT for confirmation.
+      // 3. Immediately start backing playback without awaiting it to finish.
+      
+      debugPrint("Orpheus Deck: OVERDUB LAUNCH - starting recorder first");
       final Stopwatch sw = Stopwatch();
-
-      // 1. Fire backing playback + recorder start simultaneously.
-      debugPrint(
-          "Orpheus Deck: OVERDUB LAUNCH - firing ${overdubIndices.length} players + recorder simultaneously");
       sw.start();
-      await Future.wait([
-        Future.wait(overdubIndices.map((i) => _trackPlayers[i].play())),
-        _recorder.start(
+      
+      // A. Start recorder
+      try {
+        await _recorder.start(
           const RecordConfig(
             encoder: AudioEncoder.aacLc,
             numChannels: 1,
@@ -2249,8 +2254,24 @@ class _RecorderScreenState extends State<RecorderScreen> {
             bitRate: 128000,
           ),
           path: path,
-        ),
-      ]);
+        );
+        debugPrint("Orpheus Deck: Recorder confirmed started at ${sw.elapsedMilliseconds}ms");
+      } catch (e) {
+        debugPrint("Orpheus Deck: Recorder start ERROR - $e");
+        sw.stop();
+        return;
+      }
+
+      // B. Start backing playback immediately after recorder confirms
+      if (overdubIndices.isNotEmpty) {
+        debugPrint("Orpheus Deck: Starting ${overdubIndices.length} backing players");
+        // We do NOT await the futures here, just fire and forget so they play 
+        // while the recorder is running.
+        for (int i in overdubIndices) {
+           _trackPlayers[i].play(); 
+        }
+      }
+      
       sw.stop();
 
       // 2. Measure and store the offset.
@@ -2499,6 +2520,91 @@ class _RecorderScreenState extends State<RecorderScreen> {
         ),
       ),
     );
+  }
+
+
+  Future<void> _initAudioSession() async {
+    final session = await as_sess.AudioSession.instance;
+    await session.configure(as_sess.AudioSessionConfiguration(
+      avAudioSessionCategory: as_sess.AVAudioSessionCategory.playAndRecord,
+      avAudioSessionCategoryOptions:
+          as_sess.AVAudioSessionCategoryOptions.defaultToSpeaker,
+      avAudioSessionMode: as_sess.AVAudioSessionMode.defaultMode,
+      avAudioSessionRouteSharingPolicy:
+          as_sess.AVAudioSessionRouteSharingPolicy.defaultPolicy,
+      androidAudioAttributes: const as_sess.AndroidAudioAttributes(
+        contentType: as_sess.AndroidAudioContentType.music,
+        flags: as_sess.AndroidAudioFlags.none,
+        usage: as_sess.AndroidAudioUsage.media,
+      ),
+      androidAudioFocusGainType: as_sess.AndroidAudioFocusGainType.gain,
+    ));
+    debugPrint("Orpheus Deck: Audio session configured for playAndRecord");
+  }
+
+  Future<void> _testOverdubEngine() async {
+    _showSnackbar('STARTING OVERDUB DIAGNOSTIC...');
+    
+    int? sourceIdx;
+    for (int i=0; i<4; i++) {
+      if (_trackFiles[i] != null) {
+        sourceIdx = i;
+        break;
+      }
+    }
+    
+    if (sourceIdx == null) {
+      _showSnackbar('ERR: RECORD AT LEAST 1 TRACK FIRST');
+      return;
+    }
+
+    final String sourcePath = _trackFiles[sourceIdx]!;
+    debugPrint('Orpheus Deck: [DIAG] Source found at TRK $sourceIdx: $sourcePath');
+
+    final dir = await getApplicationDocumentsDirectory();
+    final testPath = '${dir.path}/overdub_test.m4a';
+    final testFile = File(testPath);
+    if (testFile.existsSync()) testFile.deleteSync();
+
+    await _trackPlayers[sourceIdx].stop();
+    await _trackPlayers[sourceIdx].setFilePath(sourcePath);
+    await _trackPlayers[sourceIdx].setVolume(1.0);
+
+    debugPrint('Orpheus Deck: [DIAG] Starting 10s overdub test...');
+    final sw = Stopwatch();
+    sw.start();
+
+    debugPrint('Orpheus Deck: [DIAG] T+${sw.elapsedMilliseconds}ms - Requesting recorder start');
+    try {
+      await _recorder.start(const RecordConfig(), path: testPath);
+      debugPrint('Orpheus Deck: [DIAG] T+${sw.elapsedMilliseconds}ms - Recorder confirmed');
+
+      debugPrint('Orpheus Deck: [DIAG] T+${sw.elapsedMilliseconds}ms - Requesting playback start');
+      _trackPlayers[sourceIdx].play();
+      debugPrint('Orpheus Deck: [DIAG] T+${sw.elapsedMilliseconds}ms - Playback requested (fire-and-forget)');
+
+      await Future.delayed(const Duration(seconds: 10));
+
+      debugPrint('Orpheus Deck: [DIAG] T+${sw.elapsedMilliseconds}ms - Stopping test');
+      await _recorder.stop();
+      await _trackPlayers[sourceIdx].stop();
+      sw.stop();
+
+      final int size = File(testPath).existsSync() ? File(testPath).lengthSync() : 0;
+      debugPrint('Orpheus Deck: [DIAG] Test complete. Saved file size: $size bytes');
+      
+      if (size > 1000) {
+        _showSnackbar('DIAG SUCCESS: $size BYTES');
+      } else {
+        _showSnackbar('DIAG FAILURE: FILE EMPTY');
+      }
+    } catch (e) {
+      debugPrint('Orpheus Deck: [DIAG] ERROR during test: $e');
+      _showSnackbar('DIAG ERROR: $e');
+      await _recorder.stop();
+      await _trackPlayers[sourceIdx].stop();
+      sw.stop();
+    }
   }
 }
 
