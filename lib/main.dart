@@ -2241,17 +2241,22 @@ class _RecorderScreenState extends State<RecorderScreen> {
       // 3. Immediately start backing playback without awaiting it to finish.
       
       debugPrint("Orpheus Deck: OVERDUB LAUNCH - starting recorder first");
+      debugPrint(
+          'Orpheus Deck: record audioInterruption=${isOverdub ? AudioInterruptionMode.none : AudioInterruptionMode.pause} (isOverdub=$isOverdub)');
       final Stopwatch sw = Stopwatch();
       sw.start();
       
       // A. Start recorder
       try {
         await _recorder.start(
-          const RecordConfig(
+          RecordConfig(
             encoder: AudioEncoder.aacLc,
             numChannels: 1,
             sampleRate: 44100,
             bitRate: 128000,
+            audioInterruption: isOverdub
+                ? AudioInterruptionMode.none
+                : AudioInterruptionMode.pause,
           ),
           path: path,
         );
