@@ -1,3 +1,18 @@
+/// ORPHEUS DECK
+/// Junkfeathers Tech Four-Track Recorder
+///
+/// IMPORTANT:
+/// This app is intentionally NOT a modern DAW.
+/// Read ORPHEUS_DESIGN_MANIFESTO.md before making architectural changes.
+///
+/// Core philosophy:
+/// - fast idea capture
+/// - four-track limitation
+/// - cassette/tape workflow
+/// - lo-fi experimentation
+/// - minimal editing
+/// - hardware-style interaction
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
