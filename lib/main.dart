@@ -838,6 +838,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
   final List<bool> _armedTracks = [false, false, false, false];
   final List<String?> _trackFiles = [null, null, null, null];
+  final List<int> _trackOffsets = [
+    0,
+    0,
+    0,
+    0
+  ]; // ms offset per track (measured at overdub start)
   final List<double> _trackVolumes = [1.0, 1.0, 1.0, 1.0];
   final List<bool> _trackMutes = [false, false, false, false];
   final List<bool> _trackSolos = [false, false, false, false];
@@ -854,6 +860,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
   String _woodPath = '';
 
   final AudioRecorder _recorder = AudioRecorder();
+
   /// Independent just_audio players — one per track. Using just_audio
   /// instead of audioplayers because just_audio handles concurrent
   /// Android AudioFocus correctly without stealing the session from siblings.
@@ -1141,6 +1148,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
           _sessionCreatedAt = session.createdAt;
           for (int i = 0; i < 4; i++) {
             _trackFiles[i] = session.trackFiles[i];
+            _trackOffsets[i] = session.trackOffsets[i];
             _trackVolumes[i] = session.trackVolumes[i];
             _trackMutes[i] = session.trackMutes[i];
             _trackSolos[i] = session.trackSolos[i];
@@ -1175,7 +1183,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
         trackFiles: _trackFiles,
         waveformCache: _waveformCache,
         trackIds: [null, null, null, null],
-        trackOffsets: [0, 0, 0, 0],
+        trackOffsets: List<int>.from(_trackOffsets),
         trackVolumes: _trackVolumes,
         trackMutes: _trackMutes,
         trackSolos: _trackSolos,
@@ -2000,7 +2008,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
           continue;
         }
         if (!audible) {
-          debugPrint("Orpheus Deck: PLAY TRK $i SKIP - not audible (muted/solo)");
+          debugPrint(
+              "Orpheus Deck: PLAY TRK $i SKIP - not audible (muted/solo)");
           continue;
         }
         try {
@@ -2180,20 +2189,39 @@ class _RecorderScreenState extends State<RecorderScreen> {
         }
       }
 
-      // Start backing track playback, then arm the recorder.
-      debugPrint(
-          "Orpheus Deck: OVERDUB - starting ${overdubIndices.length} backing tracks: $overdubIndices");
-      await Future.wait(overdubIndices.map((i) => _trackPlayers[i].play()));
-      debugPrint("Orpheus Deck: OVERDUB backing tracks started");
+      // ── OVERDUB LAUNCH ───────────────────────────────────────────────────
+      // Strategy: prepare everything (setFilePath, recorder path) while stopped,
+      // then fire play() and recorder.start() inside a single Future.wait so the
+      // OS scheduler dispatches them as close together as possible.
+      // A Stopwatch measures the real gap and stores it as _trackOffsets.
 
-      await _recorder.start(
+      final Stopwatch sw = Stopwatch();
+
+      // 1. Fire backing playback + recorder start simultaneously.
+      debugPrint(
+          "Orpheus Deck: OVERDUB LAUNCH - firing ${overdubIndices.length} players + recorder simultaneously");
+      sw.start();
+      await Future.wait([
+        Future.wait(overdubIndices.map((i) => _trackPlayers[i].play())),
+        _recorder.start(
           const RecordConfig(
             encoder: AudioEncoder.aacLc,
             numChannels: 1,
             sampleRate: 44100,
             bitRate: 128000,
           ),
-          path: path);
+          path: path,
+        ),
+      ]);
+      sw.stop();
+
+      // 2. Measure and store the offset.
+      final int measuredOffsetMs = sw.elapsedMilliseconds;
+      setState(() {
+        _trackOffsets[armedIndex] = measuredOffsetMs;
+      });
+      debugPrint(
+          "Orpheus Deck: OVERDUB LAUNCH complete | recorder+players delta: ${measuredOffsetMs}ms | offset stored for track $armedIndex");
 
       _amplitudeSub = _recorder
           .onAmplitudeChanged(const Duration(milliseconds: 50))
@@ -2296,31 +2324,72 @@ class _RecorderScreenState extends State<RecorderScreen> {
     });
   }
 
-  void _clearTrack(int index) {
+  Future<void> _clearTrack(int index) async {
     if (_isRecording || _isPlaying) {
       _showSnackbar('ERR: STOP TRANSPORT TO CLEAR');
       return;
     }
-    if (_trackFiles[index] != null) {
-      final file = File(_trackFiles[index]!);
-
-      _lastUndo.clear();
-      _lastUndo.action = UndoAction.clearTrack;
-      _lastUndo.trackIndex = index;
-      _lastUndo.trackFile = _trackFiles[index];
-      _lastUndo.trackWaveform = _waveformCache[_trackFiles[index]!];
-
-      if (file.existsSync()) {
-        file.renameSync('${file.path}.trash');
-      }
-
-      setState(() {
-        _waveformCache.remove(_trackFiles[index]);
-        _trackFiles[index] = null;
-      });
-      _showSnackbar('TRK 0${index + 1} CLEARED');
-      _saveSession();
+    if (_trackFiles[index] == null) {
+      debugPrint('Orpheus Deck: CLEAR TRK $index - no file, nothing to do');
+      return;
     }
+
+    final String filePath = _trackFiles[index]!;
+    debugPrint('Orpheus Deck: CLEAR TRK $index START | path: $filePath');
+
+    // 1. Stop and dispose the just_audio player for this track so ExoPlayer
+    //    releases its internal file handle before we rename the file.
+    try {
+      await _trackPlayers[index].stop();
+      await _trackPlayers[index].dispose();
+      _trackPlayers[index] = ja.AudioPlayer();
+      debugPrint(
+          'Orpheus Deck: CLEAR TRK $index - player released and recreated');
+    } catch (e, s) {
+      debugPrint(
+          'Orpheus Deck: CLEAR TRK $index - player release ERROR: $e\n$s');
+    }
+
+    // 2. Save undo state before mutating anything.
+    _lastUndo.clear();
+    _lastUndo.action = UndoAction.clearTrack;
+    _lastUndo.trackIndex = index;
+    _lastUndo.trackFile = filePath;
+    _lastUndo.trackWaveform = _waveformCache[filePath];
+
+    // 3. Rename the file to .trash (recoverable undo target).
+    final File file = File(filePath);
+    if (file.existsSync()) {
+      try {
+        file.renameSync('${file.path}.trash');
+        debugPrint('Orpheus Deck: CLEAR TRK $index - renamed to .trash OK');
+      } catch (e, s) {
+        debugPrint('Orpheus Deck: CLEAR TRK $index - rename FAILED: $e\n$s');
+        // Fallback: delete so the path slot is freed even if rename fails.
+        try {
+          file.deleteSync();
+          debugPrint('Orpheus Deck: CLEAR TRK $index - fallback deleteSync OK');
+        } catch (e2, s2) {
+          debugPrint(
+              'Orpheus Deck: CLEAR TRK $index - delete also FAILED: $e2\n$s2');
+        }
+      }
+    } else {
+      debugPrint(
+          'Orpheus Deck: CLEAR TRK $index - file not on disk (already gone)');
+    }
+
+    // 4. Clear all in-memory state for this track atomically.
+    setState(() {
+      _waveformCache.remove(filePath);
+      _trackFiles[index] = null;
+      _trackOffsets[index] = 0;
+    });
+
+    debugPrint(
+        'Orpheus Deck: CLEAR TRK $index DONE - file/waveform/offset cleared');
+    _showSnackbar('TRK 0${index + 1} CLEARED');
+    _saveSession();
   }
 
   @override
