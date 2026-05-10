@@ -19,7 +19,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -933,7 +932,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
   int? _exportSessionId;
 
   Timer? _tickerTimer;
-  Timer? _metronomeTimer;
   Timer? _autosaveTimer;
 
   late String _projectName;
@@ -960,16 +958,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
   String _metronomeSound = 'CLICK';
   bool _headphonesConfirmed = false;
 
-  /// Dedicated local playback — **not** one of the four track buses (mix/export path).
-  late ja.AudioPlayer _metroPlayer;
-  StreamSubscription<ja.PlaybackEvent>? _metroPlaybackSub;
-  String? _metroLastLoadedPath;
-  bool _metroTickInFlight = false;
-
-  String _beepPath = '';
-  String _clickPath = '';
-  String _woodPath = '';
-
   final AudioRecorder _recorder = AudioRecorder();
 
   /// Independent just_audio players — one per track. Using just_audio
@@ -993,15 +981,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
   void initState() {
     super.initState();
     _projectName = widget.projectName;
-    _metroPlayer = ja.AudioPlayer();
-    _metroPlaybackSub = _metroPlayer.playbackEventStream.listen(
-      (_) {},
-      onError: (Object e, StackTrace st) {
-        debugPrint('Orpheus Deck: METRO playback stream error: $e\n$st');
-        _disableMetronomeDueToAudioConflict();
-      },
-    );
-    _initMetronome();
     _initAudioSession();
 
     if (widget.isNewProject) {
@@ -1018,7 +997,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
   @override
   void dispose() {
     _tickerTimer?.cancel();
-    _metronomeTimer?.cancel();
     _autosaveTimer?.cancel();
     _amplitudeSub?.cancel();
     for (var sub in _playerCompletionSubs) {
@@ -1030,9 +1008,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
     _recorder.dispose();
 
-    _metroPlaybackSub?.cancel();
-    _metroPlaybackSub = null;
-    _metroPlayer.dispose();
     for (var player in _trackPlayers) {
       player.dispose();
     }
@@ -1041,182 +1016,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
       FFmpegKit.cancel(_exportSessionId);
     }
     super.dispose();
-  }
-
-  Uint8List _generateWav(int frequency, int durationMs, String type) {
-    int sampleRate = 44100;
-    int numSamples = (sampleRate * durationMs) ~/ 1000;
-    int byteRate = sampleRate * 2;
-
-    var buffer = ByteData(44 + numSamples * 2);
-    buffer.setUint8(0, 0x52);
-    buffer.setUint8(1, 0x49);
-    buffer.setUint8(2, 0x46);
-    buffer.setUint8(3, 0x46);
-    buffer.setUint32(4, 36 + numSamples * 2, Endian.little);
-    buffer.setUint8(8, 0x57);
-    buffer.setUint8(9, 0x41);
-    buffer.setUint8(10, 0x56);
-    buffer.setUint8(11, 0x45);
-    buffer.setUint8(12, 0x66);
-    buffer.setUint8(13, 0x6D);
-    buffer.setUint8(14, 0x74);
-    buffer.setUint8(15, 0x20);
-    buffer.setUint32(16, 16, Endian.little);
-    buffer.setUint16(20, 1, Endian.little);
-    buffer.setUint16(22, 1, Endian.little);
-    buffer.setUint32(24, sampleRate, Endian.little);
-    buffer.setUint32(28, byteRate, Endian.little);
-    buffer.setUint16(32, 2, Endian.little);
-    buffer.setUint16(34, 16, Endian.little);
-    buffer.setUint8(36, 0x64);
-    buffer.setUint8(37, 0x61);
-    buffer.setUint8(38, 0x74);
-    buffer.setUint8(39, 0x61);
-    buffer.setUint32(40, numSamples * 2, Endian.little);
-
-    for (int i = 0; i < numSamples; i++) {
-      double t = i / sampleRate;
-      double sample = 0;
-      double envelope = 1.0 - (i / numSamples);
-
-      if (type == 'BEEP') {
-        sample = sin(2 * pi * frequency * t);
-      } else if (type == 'CLICK') {
-        sample = (Random().nextDouble() * 2 - 1) * envelope;
-      } else if (type == 'WOOD') {
-        sample = (sin(2 * pi * frequency * t) +
-                0.5 * sin(2 * pi * (frequency * 2.5) * t)) *
-            pow(envelope, 3);
-      }
-
-      int val = (sample * 32767).toInt();
-      if (val > 32767) val = 32767;
-      if (val < -32768) val = -32768;
-      buffer.setInt16(44 + i * 2, val, Endian.little);
-    }
-
-    return buffer.buffer.asUint8List();
-  }
-
-  Future<void> _initMetronome() async {
-    final dir = await getTemporaryDirectory();
-
-    File fBeep = File('${dir.path}/beep.wav');
-    await fBeep.writeAsBytes(_generateWav(880, 50, 'BEEP'));
-    _beepPath = fBeep.path;
-
-    File fClick = File('${dir.path}/click.wav');
-    await fClick.writeAsBytes(_generateWav(0, 15, 'CLICK'));
-    _clickPath = fClick.path;
-
-    File fWood = File('${dir.path}/wood.wav');
-    await fWood.writeAsBytes(_generateWav(400, 30, 'WOOD'));
-    _woodPath = fWood.path;
-  }
-
-  String _metroPathForCurrentSound() {
-    if (_metronomeSound == 'BEEP') return _beepPath;
-    if (_metronomeSound == 'WOOD') return _woodPath;
-    return _clickPath;
-  }
-
-  Future<void> _stopMetroPlayerSafe() async {
-    try {
-      await _metroPlayer.stop();
-    } catch (e, st) {
-      debugPrint('Orpheus Deck: METRO player stop error: $e\n$st');
-    }
-  }
-
-  void _disableMetronomeDueToAudioConflict() {
-    debugPrint(
-        'Orpheus Deck: METRO DISABLED: AUDIO CONFLICT '
-        '(recording=$_isRecording playing=$_isPlaying overdub=$_isOverdubbing)');
-    _stopMetronomeTicker();
-    _metroLastLoadedPath = null;
-    unawaited(_stopMetroPlayerSafe());
-    if (!mounted) return;
-    setState(() => _metronomeOn = false);
-    _saveSession();
-    _showSnackbar('METRO DISABLED: AUDIO CONFLICT');
-  }
-
-  /// Local-only click — never routed into `record` / FFmpeg mix buses.
-  Future<void> _playMetronomeTick() async {
-    if (!_metronomeOn) return;
-    final path = _metroPathForCurrentSound();
-    if (path.isEmpty) return;
-
-    if (_metroTickInFlight) {
-      debugPrint(
-          'Orpheus Deck: METRO TICK SKIP (still playing) sound=$_metronomeSound bpm=$_bpm');
-      return;
-    }
-    _metroTickInFlight = true;
-
-    debugPrint(
-        'Orpheus Deck: METRO TICK sound=$_metronomeSound bpm=$_bpm '
-        'recording=$_isRecording playing=$_isPlaying overdub=$_isOverdubbing');
-
-    try {
-      await _metroPlayer.stop();
-      if (_metroLastLoadedPath != path) {
-        await _metroPlayer.setFilePath(path);
-        _metroLastLoadedPath = path;
-      }
-      await _metroPlayer.setVolume(1.0);
-      await _metroPlayer.seek(Duration.zero);
-      await _metroPlayer.play();
-    } catch (e, st) {
-      debugPrint(
-          'Orpheus Deck: METRO player error (recording=$_isRecording playing=$_isPlaying): $e\n$st');
-      _disableMetronomeDueToAudioConflict();
-    } finally {
-      _metroTickInFlight = false;
-    }
-  }
-
-  void _restartMetronomeTickerIfActive() {
-    if (!_metronomeOn) return;
-    if (!_isPlaying && !_isRecording) return;
-    debugPrint(
-        'Orpheus Deck: METRO RESTART bpm=$_bpm recording=$_isRecording playing=$_isPlaying');
-    _stopMetronomeTicker();
-    _startMetronomeTicker();
-  }
-
-  void _startMetronomeTicker() {
-    _metronomeTimer?.cancel();
-    if (!_metronomeOn) return;
-    final int msPerBeat = (60000 / _bpm).round();
-
-    debugPrint(
-        'Orpheus Deck: METRO TICKER START bpm=$_bpm intervalMs=$msPerBeat '
-        'recording=$_isRecording playing=$_isPlaying overdub=$_isOverdubbing');
-
-    if (_isRecording) {
-      Future.delayed(const Duration(milliseconds: 400), () {
-        if (!_isRecording || !_metronomeOn) return;
-        unawaited(_playMetronomeTick());
-        _metronomeTimer =
-            Timer.periodic(Duration(milliseconds: msPerBeat), (Timer t) {
-          unawaited(_playMetronomeTick());
-        });
-      });
-    } else {
-      unawaited(_playMetronomeTick());
-      _metronomeTimer =
-          Timer.periodic(Duration(milliseconds: msPerBeat), (Timer t) {
-        unawaited(_playMetronomeTick());
-      });
-    }
-  }
-
-  void _stopMetronomeTicker() {
-    debugPrint(
-        'Orpheus Deck: METRO TICKER STOP recording=$_isRecording playing=$_isPlaying');
-    _metronomeTimer?.cancel();
   }
 
   Future<void> _setLastProjectName(String name) async {
@@ -2160,7 +1959,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     return identical(a, b);
   }
 
-  void _showMetronomeMenu() {
+  void _showGuideTrackSettings() {
     showDialog(
         context: context,
         builder: (context) {
@@ -2168,121 +1967,135 @@ class _RecorderScreenState extends State<RecorderScreen> {
             return AlertDialog(
               backgroundColor: Colors.black,
               shape: Border.all(color: Colors.white, width: 2),
-              title: const Text("METRONOME",
+              title: const Text("GUIDE TRACK",
                   style: TextStyle(
                       color: Colors.white,
                       fontFamily: 'monospace',
                       fontWeight: FontWeight.bold)),
-              content: Column(mainAxisSize: MainAxisSize.min, children: [
-                Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text("STATUS",
-                          style: TextStyle(
-                              color: Colors.white54, fontFamily: 'monospace')),
-                      GestureDetector(
-                          onTap: () {
-                            setState(() => _metronomeOn = !_metronomeOn);
-                            setDialogState(() {});
-                            debugPrint(
-                                'Orpheus Deck: METRO ${_metronomeOn ? "ON" : "OFF"} bpm=$_bpm '
-                                'recording=$_isRecording playing=$_isPlaying');
-                            _saveSession();
-                            if (_metronomeOn) {
-                              if (_isPlaying || _isRecording) {
-                                _startMetronomeTicker();
-                              }
-                            } else {
-                              _stopMetronomeTicker();
-                              unawaited(_stopMetroPlayerSafe());
-                            }
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: _metronomeOn ? Colors.white : Colors.black,
-                              border: Border.all(color: Colors.white),
-                            ),
-                            child: Text(_metronomeOn ? "ON" : "OFF",
-                                style: TextStyle(
-                                    color: _metronomeOn
-                                        ? Colors.black
-                                        : Colors.white,
-                                    fontFamily: 'monospace',
-                                    fontWeight: FontWeight.bold)),
-                          ))
-                    ]),
-                const SizedBox(height: 16),
-                Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text("BPM",
-                          style: TextStyle(
-                              color: Colors.white54, fontFamily: 'monospace')),
-                      Row(children: [
-                        IconButton(
-                            icon: const Icon(Icons.remove, color: Colors.white),
-                            onPressed: () {
-                              if (_bpm > 40) {
-                                setState(() => _bpm--);
+              content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Settings only — no timer-based clicks. Audible guide will use timeline audio when implemented.',
+                      style: TextStyle(
+                          color: Colors.white54,
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                          height: 1.35),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text("ENABLE",
+                              style: TextStyle(
+                                  color: Colors.white54,
+                                  fontFamily: 'monospace')),
+                          GestureDetector(
+                              onTap: () {
+                                setState(() => _metronomeOn = !_metronomeOn);
                                 setDialogState(() {});
                                 debugPrint(
-                                    'Orpheus Deck: METRO BPM $_bpm recording=$_isRecording playing=$_isPlaying');
+                                    'Orpheus Deck: GUIDE TRACK ${_metronomeOn ? "ENABLED" : "DISABLED"} '
+                                    'bpm=$_bpm recording=$_isRecording playing=$_isPlaying');
                                 _saveSession();
-                                _restartMetronomeTickerIfActive();
-                              }
-                            }),
-                        Text("$_bpm",
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: _metronomeOn
+                                      ? Colors.white
+                                      : Colors.black,
+                                  border: Border.all(color: Colors.white),
+                                ),
+                                child: Text(_metronomeOn ? "ON" : "OFF",
+                                    style: TextStyle(
+                                        color: _metronomeOn
+                                            ? Colors.black
+                                            : Colors.white,
+                                        fontFamily: 'monospace',
+                                        fontWeight: FontWeight.bold)),
+                              ))
+                        ]),
+                    const SizedBox(height: 16),
+                    Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text("BPM",
+                              style: TextStyle(
+                                  color: Colors.white54,
+                                  fontFamily: 'monospace')),
+                          Row(children: [
+                            IconButton(
+                                icon: const Icon(Icons.remove,
+                                    color: Colors.white),
+                                onPressed: () {
+                                  if (_bpm > 40) {
+                                    setState(() => _bpm--);
+                                    setDialogState(() {});
+                                    debugPrint(
+                                        'Orpheus Deck: GUIDE TRACK BPM $_bpm '
+                                        'recording=$_isRecording playing=$_isPlaying');
+                                    _saveSession();
+                                  }
+                                }),
+                            Text("$_bpm",
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontFamily: 'monospace',
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold)),
+                            IconButton(
+                                icon: const Icon(Icons.add, color: Colors.white),
+                                onPressed: () {
+                                  if (_bpm < 240) {
+                                    setState(() => _bpm++);
+                                    setDialogState(() {});
+                                    debugPrint(
+                                        'Orpheus Deck: GUIDE TRACK BPM $_bpm '
+                                        'recording=$_isRecording playing=$_isPlaying');
+                                    _saveSession();
+                                  }
+                                }),
+                          ])
+                        ]),
+                    const SizedBox(height: 16),
+                    Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text("SOUND",
+                              style: TextStyle(
+                                  color: Colors.white54,
+                                  fontFamily: 'monospace')),
+                          DropdownButton<String>(
+                            value: _metronomeSound,
+                            dropdownColor: Colors.black,
                             style: const TextStyle(
                                 color: Colors.white,
-                                fontFamily: 'monospace',
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold)),
-                        IconButton(
-                            icon: const Icon(Icons.add, color: Colors.white),
-                            onPressed: () {
-                              if (_bpm < 240) {
-                                setState(() => _bpm++);
+                                fontFamily: 'monospace'),
+                            underline:
+                                Container(height: 1, color: Colors.white54),
+                            items:
+                                ['CLICK', 'BEEP', 'WOOD'].map((String val) {
+                              return DropdownMenuItem<String>(
+                                value: val,
+                                child: Text(val),
+                              );
+                            }).toList(),
+                            onChanged: (val) {
+                              if (val != null) {
+                                setState(() => _metronomeSound = val);
                                 setDialogState(() {});
                                 debugPrint(
-                                    'Orpheus Deck: METRO BPM $_bpm recording=$_isRecording playing=$_isPlaying');
+                                    'Orpheus Deck: GUIDE TRACK sound=$val bpm=$_bpm');
                                 _saveSession();
-                                _restartMetronomeTickerIfActive();
                               }
-                            }),
-                      ])
-                    ]),
-                const SizedBox(height: 16),
-                Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text("SOUND",
-                          style: TextStyle(
-                              color: Colors.white54, fontFamily: 'monospace')),
-                      DropdownButton<String>(
-                        value: _metronomeSound,
-                        dropdownColor: Colors.black,
-                        style: const TextStyle(
-                            color: Colors.white, fontFamily: 'monospace'),
-                        underline: Container(height: 1, color: Colors.white54),
-                        items: ['CLICK', 'BEEP', 'WOOD'].map((String val) {
-                          return DropdownMenuItem<String>(
-                            value: val,
-                            child: Text(val),
-                          );
-                        }).toList(),
-                        onChanged: (val) {
-                          if (val != null) {
-                            setState(() => _metronomeSound = val);
-                            setDialogState(() {});
-                            _playMetronomeTick();
-                            _saveSession();
-                          }
-                        },
-                      )
-                    ])
-              ]),
+                            },
+                          )
+                        ])
+                  ]),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
@@ -2649,7 +2462,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
       }
 
       _startTicker();
-      _startMetronomeTicker();
       _attachPlayerCompletionListeners(readyIndices);
     }
   }
@@ -2860,7 +2672,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
         debugPrint("Orpheus Deck: Recorder confirmed started at ${sw.elapsedMilliseconds}ms");
       } catch (e, st) {
         debugPrint(
-            "Orpheus Deck: Recorder start ERROR metro=$_metronomeOn $e\n$st");
+            "Orpheus Deck: Recorder start ERROR $e\n$st");
         sw.stop();
         return;
       }
@@ -2904,7 +2716,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
         _playbackProgress = 0.0;
       });
       _startTicker();
-      _startMetronomeTicker();
     }
   }
 
@@ -2913,9 +2724,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
       FFmpegKit.cancel(_exportSessionId);
       return;
     }
-
-    _stopMetronomeTicker();
-    await _stopMetroPlayerSafe();
 
     bool recordedSomething = false;
 
@@ -2956,7 +2764,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
 
     _tickerTimer?.cancel();
-    _metronomeTimer?.cancel();
 
     setState(() {
       _isPlaying = false;
@@ -3118,7 +2925,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
                 onStop: _stop,
                 onStopLongPress: _resetTimer,
                 onRecord: _record,
-                onMetro: _showMetronomeMenu,
+                onMetro: _showGuideTrackSettings,
               ),
             ],
           ),
