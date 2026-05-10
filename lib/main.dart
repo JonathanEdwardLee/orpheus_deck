@@ -3054,10 +3054,22 @@ class _RecorderScreenState extends State<RecorderScreen> {
       // 1. Prepare backing players (seek zero, set volume).
       // 2. Start recorder and WAIT for confirmation.
       // 3. Immediately start backing playback without awaiting it to finish.
-      
-      debugPrint("Orpheus Deck: OVERDUB LAUNCH - starting recorder first");
+      //
+      // Concurrent just_audio (backing and/or CLICK) requires
+      // [AudioInterruptionMode.none] or the recorder yields to playback and
+      // records silence on some devices.
+
+      final bool clickEnabled = _metronomeOn;
+      final bool hasConcurrentPlayback = isOverdub || clickEnabled;
+      final AudioInterruptionMode recordInterruptionMode = hasConcurrentPlayback
+          ? AudioInterruptionMode.none
+          : AudioInterruptionMode.pause;
+
+      debugPrint("Orpheus Deck: RECORD LAUNCH - starting recorder first");
       debugPrint(
-          'Orpheus Deck: record audioInterruption=${isOverdub ? AudioInterruptionMode.none : AudioInterruptionMode.pause} (isOverdub=$isOverdub)');
+          'Orpheus Deck: record isOverdub=$isOverdub clickEnabled=$clickEnabled '
+          'hasConcurrentPlayback=$hasConcurrentPlayback '
+          'audioInterruption=$recordInterruptionMode');
       final Stopwatch sw = Stopwatch();
       sw.start();
       
@@ -3069,13 +3081,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
             numChannels: 1,
             sampleRate: 44100,
             bitRate: 128000,
-            audioInterruption: isOverdub
-                ? AudioInterruptionMode.none
-                : AudioInterruptionMode.pause,
+            audioInterruption: recordInterruptionMode,
           ),
           path: path,
         );
-        debugPrint("Orpheus Deck: Recorder confirmed started at ${sw.elapsedMilliseconds}ms");
+        debugPrint(
+            "Orpheus Deck: Recorder start CONFIRMED at ${sw.elapsedMilliseconds}ms path=$path");
       } catch (e, st) {
         debugPrint(
             "Orpheus Deck: Recorder start ERROR $e\n$st");
@@ -3105,11 +3116,18 @@ class _RecorderScreenState extends State<RecorderScreen> {
         _trackOffsets[armedIndex] = measuredOffsetMs;
       });
       debugPrint(
-          "Orpheus Deck: OVERDUB LAUNCH complete | recorder+players delta: ${measuredOffsetMs}ms | offset stored for track $armedIndex");
+          "Orpheus Deck: RECORD LAUNCH complete | recorder+players delta: ${measuredOffsetMs}ms | offset stored for track $armedIndex");
 
+      int recAmpLogTicks = 0;
       _amplitudeSub = _recorder
           .onAmplitudeChanged(const Duration(milliseconds: 50))
           .listen((amp) {
+        if (recAmpLogTicks < 40) {
+          debugPrint(
+              'Orpheus Deck: REC amplitude tick=$recAmpLogTicks '
+              'currentDb=${amp.current} isOverdub=$isOverdub clickEnabled=$clickEnabled');
+          recAmpLogTicks++;
+        }
         setState(() {
           double normalized = (amp.current + 45) / 45;
           if (normalized < 0.02) normalized = 0.02;
@@ -3146,7 +3164,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
           final file = File(path);
           int fileSize = file.existsSync() ? file.lengthSync() : 0;
           debugPrint(
-              "Orpheus Deck: Recorder stopped. File size: $fileSize bytes at $path");
+              "Orpheus Deck: Recorder stopped. SAVED file size=$fileSize bytes path=$path "
+              "ampSamples=${_liveAmplitudes.length} clickEnabled=$_metronomeOn");
 
           if (fileSize > 0 &&
               _liveAmplitudes.isNotEmpty &&
