@@ -19,7 +19,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:record/record.dart';
@@ -32,6 +34,133 @@ import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:open_file/open_file.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:audio_session/audio_session.dart' as as_sess;
+
+/// One cassette side — matches ORPHEUS_DESIGN_MANIFESTO.md.
+const int kOrpheusTapeLengthMs = 15 * 60 * 1000;
+
+/// Parameters for [buildClickTrackWavBytes] (must stay simple for [compute]).
+class ClickWavParams {
+  final int bpm;
+  final String sound;
+  const ClickWavParams(this.bpm, this.sound);
+}
+
+int _clipAddI16(int a, int b) {
+  final x = a + b;
+  if (x > 32767) return 32767;
+  if (x < -32768) return -32768;
+  return x;
+}
+
+void _mixMechanicalClick(Int16List buf, int start, int bufLen, int peak) {
+  const sr = 44100;
+  final n = (sr * 0.012).round();
+  for (int i = 0; i < n; i++) {
+    final idx = start + i;
+    if (idx >= bufLen) break;
+    final t = i / sr;
+    final env = exp(-t / 0.00042);
+    final grain =
+        ((((idx * 7919) ^ (i * 1103515245)) & 0xffff) / 32768.0) - 0.5;
+    final s = (grain * env * peak).round();
+    buf[idx] = _clipAddI16(buf[idx], s);
+  }
+}
+
+void _mixBeepHit(Int16List buf, int start, int bufLen, int peak) {
+  const sr = 44100;
+  const freq = 740.0;
+  final n = (sr * 0.036).round();
+  for (int i = 0; i < n; i++) {
+    final idx = start + i;
+    if (idx >= bufLen) break;
+    final t = i / sr;
+    final env = pow(1.0 - (t / 0.036).clamp(0.0, 1.0), 2.2).toDouble();
+    final s = (sin(2 * pi * freq * t) * env * peak).round();
+    buf[idx] = _clipAddI16(buf[idx], s);
+  }
+}
+
+void _mixWoodHit(Int16List buf, int start, int bufLen, int peak) {
+  const sr = 44100;
+  final n = (sr * 0.040).round();
+  for (int i = 0; i < n; i++) {
+    final idx = start + i;
+    if (idx >= bufLen) break;
+    final t = i / sr;
+    final env = exp(-t / 0.0085);
+    final s1 = sin(2 * pi * 312 * t);
+    final s2 = 0.42 * sin(2 * pi * 905 * t);
+    final s = ((s1 + s2) * env * peak * 0.52).round();
+    buf[idx] = _clipAddI16(buf[idx], s);
+  }
+}
+
+void _mixClickHitAt(Int16List buf, int start, String sound, int bufLen) {
+  const peak = 13500;
+  switch (sound) {
+    case 'BEEP':
+      _mixBeepHit(buf, start, bufLen, peak);
+      break;
+    case 'WOOD':
+      _mixWoodHit(buf, start, bufLen, peak);
+      break;
+    default:
+      _mixMechanicalClick(buf, start, bufLen, peak);
+  }
+}
+
+Uint8List _pcmMono16LeToWavBytes(Int16List samples, int sampleRate) {
+  final dataSize = samples.length * 2;
+  final out = Uint8List(44 + dataSize);
+  final h = ByteData.sublistView(out, 0, 44);
+  h.setUint8(0, 0x52);
+  h.setUint8(1, 0x49);
+  h.setUint8(2, 0x46);
+  h.setUint8(3, 0x46);
+  h.setUint32(4, 36 + dataSize, Endian.little);
+  h.setUint8(8, 0x57);
+  h.setUint8(9, 0x41);
+  h.setUint8(10, 0x56);
+  h.setUint8(11, 0x45);
+  h.setUint8(12, 0x66);
+  h.setUint8(13, 0x6D);
+  h.setUint8(14, 0x74);
+  h.setUint8(15, 0x20);
+  h.setUint32(16, 16, Endian.little);
+  h.setUint16(20, 1, Endian.little);
+  h.setUint16(22, 1, Endian.little);
+  h.setUint32(24, sampleRate, Endian.little);
+  h.setUint32(28, sampleRate * 2, Endian.little);
+  h.setUint16(32, 2, Endian.little);
+  h.setUint16(34, 16, Endian.little);
+  h.setUint8(36, 0x64);
+  h.setUint8(37, 0x61);
+  h.setUint8(38, 0x74);
+  h.setUint8(39, 0x61);
+  h.setUint32(40, dataSize, Endian.little);
+  out.setRange(
+    44,
+    44 + dataSize,
+    samples.buffer.asUint8List(samples.offsetInBytes, dataSize),
+  );
+  return out;
+}
+
+/// Heavy work — run via [compute] to avoid janking the UI isolate.
+Uint8List buildClickTrackWavBytes(ClickWavParams p) {
+  const int sampleRate = 44100;
+  const int durationSec = 15 * 60;
+  const int totalSamples = sampleRate * durationSec;
+  final samples = Int16List(totalSamples);
+  final double samplesPerBeat = sampleRate * 60.0 / p.bpm;
+  for (int beat = 0;; beat++) {
+    final start = (beat * samplesPerBeat).round();
+    if (start >= totalSamples) break;
+    _mixClickHitAt(samples, start, p.sound, totalSamples);
+  }
+  return _pcmMono16LeToWavBytes(samples, sampleRate);
+}
 
 void main() {
   runApp(const OrpheusDeckApp());
@@ -966,6 +1095,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
   final List<ja.AudioPlayer> _trackPlayers =
       List.generate(4, (_) => ja.AudioPlayer());
 
+  /// Hidden click-track bus: timeline WAV only — never an armed recording track.
+  late ja.AudioPlayer _clickPlayer;
+  StreamSubscription<ja.PlaybackEvent>? _clickPlaybackSub;
+  String? _clickPlayerSourcePath;
+  bool _isBuildingClickTrack = false;
+
   final Map<String, List<double>> _waveformCache = {};
   final List<double> _liveAmplitudes = [];
   StreamSubscription<Amplitude>? _amplitudeSub;
@@ -981,6 +1116,14 @@ class _RecorderScreenState extends State<RecorderScreen> {
   void initState() {
     super.initState();
     _projectName = widget.projectName;
+    _clickPlayer = ja.AudioPlayer();
+    _clickPlaybackSub = _clickPlayer.playbackEventStream.listen(
+      (_) {},
+      onError: (Object e, StackTrace st) {
+        debugPrint('Orpheus Deck: CLICK player stream error: $e\n$st');
+        _disableClickTrackDueToAudioConflict();
+      },
+    );
     _initAudioSession();
 
     if (widget.isNewProject) {
@@ -1008,6 +1151,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
     _recorder.dispose();
 
+    _clickPlaybackSub?.cancel();
+    _clickPlaybackSub = null;
+    _clickPlayer.dispose();
+
     for (var player in _trackPlayers) {
       player.dispose();
     }
@@ -1016,6 +1163,216 @@ class _RecorderScreenState extends State<RecorderScreen> {
       FFmpegKit.cancel(_exportSessionId);
     }
     super.dispose();
+  }
+
+  String _clickSoundFileSlug(String sound) {
+    switch (sound) {
+      case 'BEEP':
+        return 'beep';
+      case 'WOOD':
+        return 'wood';
+      default:
+        return 'click';
+    }
+  }
+
+  String _clickFilenameForCurrentSpec() =>
+      'click_${_bpm}_${_clickSoundFileSlug(_metronomeSound)}.wav';
+
+  Future<String> _clickTrackAbsolutePath() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final projDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
+    if (!await projDir.exists()) {
+      await projDir.create(recursive: true);
+    }
+    return '${projDir.path}/${_clickFilenameForCurrentSpec()}';
+  }
+
+  bool _fileMatchesCurrentClickSpec(String absolutePath) {
+    final name = absolutePath.split(RegExp(r'[/\\]')).last;
+    return name == _clickFilenameForCurrentSpec();
+  }
+
+  /// Tape length for transport clock: content duration, or 15:00 when click-only practice.
+  int _tapeTimelineMaxMs() {
+    final content = _getMaxPlaybackDuration();
+    if (content > 0) return content;
+    if (_metronomeOn) return kOrpheusTapeLengthMs;
+    return 0;
+  }
+
+  Future<void> _pruneStaleClickWavs(Directory projDir, String keepPath) async {
+    if (!await projDir.exists()) return;
+    final keepName = keepPath.split(RegExp(r'[/\\]')).last;
+    try {
+      for (final e in projDir.listSync()) {
+        if (e is! File) continue;
+        final n = e.path.split(RegExp(r'[/\\]')).last;
+        if (n.startsWith('click_') && n.endsWith('.wav') && n != keepName) {
+          try {
+            await e.delete();
+            debugPrint('Orpheus Deck: CLICK removed stale $n');
+          } catch (err) {
+            debugPrint('Orpheus Deck: CLICK stale delete err $err');
+          }
+        }
+      }
+    } catch (e, st) {
+      debugPrint('Orpheus Deck: CLICK prune error $e\n$st');
+    }
+  }
+
+  Future<void> _materializeClickFile(String path) async {
+    debugPrint(
+        'Orpheus Deck: CLICK generation START bpm=$_bpm sound=$_metronomeSound path=$path');
+    final bytes = await compute(
+      buildClickTrackWavBytes,
+      ClickWavParams(_bpm, _metronomeSound),
+    );
+    await _pruneStaleClickWavs(File(path).parent, path);
+    final f = File(path);
+    await f.writeAsBytes(bytes, flush: true);
+    final len = await f.length();
+    debugPrint(
+        'Orpheus Deck: CLICK generation DONE size=$len bpm=$_bpm sound=$_metronomeSound path=$path');
+  }
+
+  Future<void> _runWithBuildingClickDialog(Future<void> Function() job) async {
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.black,
+        shape: Border.all(color: Colors.white, width: 2),
+        content: const Row(
+          children: [
+            SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            ),
+            SizedBox(width: 16),
+            Expanded(
+              child: Text(
+                'BUILDING CLICK TRACK',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    try {
+      await job();
+    } finally {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+    }
+  }
+
+  /// Builds WAV on disk when missing or spec changed (filename encodes bpm + sound).
+  Future<String?> _ensureClickTrackFile({bool showBuildingUi = false}) async {
+    if (!_metronomeOn) return null;
+    final path = await _clickTrackAbsolutePath();
+    final f = File(path);
+    if (await f.exists() && await f.length() > 1000 && _fileMatchesCurrentClickSpec(path)) {
+      debugPrint('Orpheus Deck: CLICK reuse existing path=$path size=${await f.length()}');
+      return path;
+    }
+    if (_isBuildingClickTrack) {
+      debugPrint('Orpheus Deck: CLICK generation already in progress — skip duplicate');
+      return null;
+    }
+    _isBuildingClickTrack = true;
+    try {
+      if (showBuildingUi && mounted) {
+        await _runWithBuildingClickDialog(() => _materializeClickFile(path));
+      } else {
+        await _materializeClickFile(path);
+      }
+    } catch (e, st) {
+      debugPrint('Orpheus Deck: CLICK generation FAILED $e\n$st');
+      if (mounted) {
+        _showSnackbar('ERR: CLICK TRACK BUILD FAILED');
+      }
+      return null;
+    } finally {
+      _isBuildingClickTrack = false;
+    }
+    if (!File(path).existsSync()) return null;
+    return path;
+  }
+
+  Future<void> _stopClickPlayback() async {
+    try {
+      await _clickPlayer.stop();
+      debugPrint(
+          'Orpheus Deck: CLICK player STOP recording=$_isRecording playing=$_isPlaying');
+    } catch (e, st) {
+      debugPrint('Orpheus Deck: CLICK player stop error $e\n$st');
+    }
+  }
+
+  void _disableClickTrackDueToAudioConflict() {
+    debugPrint(
+        'Orpheus Deck: CLICK DISABLED: AUDIO CONFLICT '
+        'recording=$_isRecording playing=$_isPlaying overdub=$_isOverdubbing');
+    unawaited(_stopClickPlayback());
+    if (!mounted) return;
+    setState(() => _metronomeOn = false);
+    _saveSession();
+    _showSnackbar('CLICK DISABLED: AUDIO CONFLICT');
+  }
+
+  Future<void> _tryStartClickPlayback({required String contextTag}) async {
+    if (!_metronomeOn) return;
+    final bool showBuild =
+        contextTag == 'play' || contextTag == 'record';
+    try {
+      final path = await _ensureClickTrackFile(showBuildingUi: showBuild);
+      if (path == null || !File(path).existsSync()) {
+        debugPrint('Orpheus Deck: CLICK start aborted (no file) ctx=$contextTag');
+        return;
+      }
+      if (_clickPlayerSourcePath != path) {
+        await _clickPlayer.setFilePath(path);
+        _clickPlayerSourcePath = path;
+      }
+      await _clickPlayer.setVolume(1.0);
+      await _clickPlayer.seek(Duration(milliseconds: _playbackMs));
+      await _clickPlayer.play();
+      debugPrint(
+          'Orpheus Deck: CLICK player START ctx=$contextTag posMs=$_playbackMs '
+          'bpm=$_bpm sound=$_metronomeSound recording=$_isRecording playing=$_isPlaying path=$path');
+    } catch (e, st) {
+      debugPrint(
+          'Orpheus Deck: CLICK player START FAILED ctx=$contextTag recording=$_isRecording $e\n$st');
+      _disableClickTrackDueToAudioConflict();
+    }
+  }
+
+  Future<void> _resyncClickPlayerToTransport() async {
+    if (!_metronomeOn || !_isPlaying) return;
+    try {
+      final pos = _clickPlayer.position.inMilliseconds;
+      final delta = (_playbackMs - pos).abs();
+      if (delta > 140) {
+        await _clickPlayer.seek(Duration(milliseconds: _playbackMs));
+        debugPrint(
+            'Orpheus Deck: CLICK resync seek to $_playbackMs (was $pos) recording=$_isRecording');
+      }
+    } catch (e, st) {
+      debugPrint('Orpheus Deck: CLICK resync error $e\n$st');
+    }
   }
 
   Future<void> _setLastProjectName(String name) async {
@@ -1104,6 +1461,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _playbackProgress = 0.0;
     _playbackMs = 0;
     _lastUndo.clear();
+    _clickPlayerSourcePath = null;
 
     _updateMixerState();
     await _saveSession();
@@ -1155,6 +1513,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
           _metronomeSound = session.metronomeSound;
           _headphonesConfirmed = false;
         });
+        _clickPlayerSourcePath = null;
       }
 
       _lastUndo.clear();
@@ -1345,6 +1704,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
       setState(() {
         _projectName = safeName;
       });
+      _clickPlayerSourcePath = null;
       await _saveSession();
       _showSnackbar("PROJECT RENAMED");
     } catch (e) {
@@ -1959,7 +2319,13 @@ class _RecorderScreenState extends State<RecorderScreen> {
     return identical(a, b);
   }
 
-  void _showGuideTrackSettings() {
+  Future<void> _rebuildClickWavFromDialog() async {
+    _clickPlayerSourcePath = null;
+    if (!_metronomeOn) return;
+    await _ensureClickTrackFile(showBuildingUi: true);
+  }
+
+  void _showClickTrackSettings() {
     showDialog(
         context: context,
         builder: (context) {
@@ -1967,7 +2333,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
             return AlertDialog(
               backgroundColor: Colors.black,
               shape: Border.all(color: Colors.white, width: 2),
-              title: const Text("GUIDE TRACK",
+              title: const Text("CLICK TRACK",
                   style: TextStyle(
                       color: Colors.white,
                       fontFamily: 'monospace',
@@ -1977,7 +2343,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Settings only — no timer-based clicks. Audible guide will use timeline audio when implemented.',
+                      'Timeline WAV in project folder — not mixed to export. Turn OFF for silent monitor.',
                       style: TextStyle(
                           color: Colors.white54,
                           fontFamily: 'monospace',
@@ -1988,18 +2354,32 @@ class _RecorderScreenState extends State<RecorderScreen> {
                     Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          const Text("ENABLE",
+                          const Text("CLICK",
                               style: TextStyle(
                                   color: Colors.white54,
                                   fontFamily: 'monospace')),
                           GestureDetector(
-                              onTap: () {
-                                setState(() => _metronomeOn = !_metronomeOn);
-                                setDialogState(() {});
-                                debugPrint(
-                                    'Orpheus Deck: GUIDE TRACK ${_metronomeOn ? "ENABLED" : "DISABLED"} '
-                                    'bpm=$_bpm recording=$_isRecording playing=$_isPlaying');
-                                _saveSession();
+                              onTap: () async {
+                                final next = !_metronomeOn;
+                                if (next) {
+                                  setState(() => _metronomeOn = true);
+                                  setDialogState(() {});
+                                  debugPrint(
+                                      'Orpheus Deck: CLICK TRACK ENABLED '
+                                      'bpm=$_bpm recording=$_isRecording playing=$_isPlaying');
+                                  _saveSession();
+                                  _clickPlayerSourcePath = null;
+                                  await _ensureClickTrackFile(
+                                      showBuildingUi: true);
+                                } else {
+                                  setState(() => _metronomeOn = false);
+                                  setDialogState(() {});
+                                  await _stopClickPlayback();
+                                  debugPrint(
+                                      'Orpheus Deck: CLICK TRACK DISABLED '
+                                      'recording=$_isRecording playing=$_isPlaying');
+                                  _saveSession();
+                                }
                               },
                               child: Container(
                                 padding: const EdgeInsets.symmetric(
@@ -2031,14 +2411,15 @@ class _RecorderScreenState extends State<RecorderScreen> {
                             IconButton(
                                 icon: const Icon(Icons.remove,
                                     color: Colors.white),
-                                onPressed: () {
+                                onPressed: () async {
                                   if (_bpm > 40) {
                                     setState(() => _bpm--);
                                     setDialogState(() {});
                                     debugPrint(
-                                        'Orpheus Deck: GUIDE TRACK BPM $_bpm '
+                                        'Orpheus Deck: CLICK TRACK BPM $_bpm '
                                         'recording=$_isRecording playing=$_isPlaying');
                                     _saveSession();
+                                    await _rebuildClickWavFromDialog();
                                   }
                                 }),
                             Text("$_bpm",
@@ -2049,14 +2430,15 @@ class _RecorderScreenState extends State<RecorderScreen> {
                                     fontWeight: FontWeight.bold)),
                             IconButton(
                                 icon: const Icon(Icons.add, color: Colors.white),
-                                onPressed: () {
+                                onPressed: () async {
                                   if (_bpm < 240) {
                                     setState(() => _bpm++);
                                     setDialogState(() {});
                                     debugPrint(
-                                        'Orpheus Deck: GUIDE TRACK BPM $_bpm '
+                                        'Orpheus Deck: CLICK TRACK BPM $_bpm '
                                         'recording=$_isRecording playing=$_isPlaying');
                                     _saveSession();
+                                    await _rebuildClickWavFromDialog();
                                   }
                                 }),
                           ])
@@ -2077,20 +2459,28 @@ class _RecorderScreenState extends State<RecorderScreen> {
                                 fontFamily: 'monospace'),
                             underline:
                                 Container(height: 1, color: Colors.white54),
-                            items:
-                                ['CLICK', 'BEEP', 'WOOD'].map((String val) {
-                              return DropdownMenuItem<String>(
-                                value: val,
-                                child: Text(val),
-                              );
-                            }).toList(),
-                            onChanged: (val) {
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'CLICK',
+                                child: Text('Click'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'BEEP',
+                                child: Text('Beep'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'WOOD',
+                                child: Text('Wood Block'),
+                              ),
+                            ],
+                            onChanged: (val) async {
                               if (val != null) {
                                 setState(() => _metronomeSound = val);
                                 setDialogState(() {});
                                 debugPrint(
-                                    'Orpheus Deck: GUIDE TRACK sound=$val bpm=$_bpm');
+                                    'Orpheus Deck: CLICK TRACK sound=$val bpm=$_bpm');
                                 _saveSession();
+                                await _rebuildClickWavFromDialog();
                               }
                             },
                           )
@@ -2347,19 +2737,33 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _tickerTimer?.cancel();
     _tickerTimer = Timer.periodic(const Duration(milliseconds: 50), (Timer t) {
       if (_isPlaying) {
-        int maxMs = _getMaxPlaybackDuration();
+        final int maxMs = _tapeTimelineMaxMs();
         if (maxMs > 0) {
-          setState(() {
-            _playbackMs += 50;
-            _playbackProgress = _playbackMs / maxMs;
-            if (_playbackProgress > 1.0) _playbackProgress = 1.0;
-          });
+          final int nextMs = _playbackMs + 50;
+          if (nextMs >= maxMs) {
+            setState(() {
+              _playbackMs = maxMs;
+              _playbackProgress = 1.0;
+            });
+            scheduleMicrotask(() async {
+              await _stop();
+            });
+          } else {
+            setState(() {
+              _playbackMs = nextMs;
+              _playbackProgress = _playbackMs / maxMs;
+              if (_playbackProgress > 1.0) _playbackProgress = 1.0;
+            });
+          }
         }
       }
       if (t.tick % 20 == 0) {
         setState(() {
           _recordDuration++;
         });
+      }
+      if (t.tick % 20 == 0 && _isPlaying && _metronomeOn) {
+        unawaited(_resyncClickPlayerToTransport());
       }
     });
   }
@@ -2460,6 +2864,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
       } catch (e) {
         debugPrint("Orpheus Deck: play() ERROR - $e");
       }
+
+      await _tryStartClickPlayback(contextTag: 'play');
 
       _startTicker();
       _attachPlayerCompletionListeners(readyIndices);
@@ -2686,6 +3092,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
            _trackPlayers[i].play(); 
         }
       }
+
+      if (_metronomeOn) {
+        unawaited(_tryStartClickPlayback(contextTag: 'record'));
+      }
       
       sw.stop();
 
@@ -2762,6 +3172,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
     for (var player in _trackPlayers) {
       await player.stop();
     }
+
+    await _stopClickPlayback();
 
     _tickerTimer?.cancel();
 
@@ -2920,12 +3332,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
               TransportControls(
                 isPlaying: _isPlaying,
                 isRecording: _isRecording,
-                isMetronomeOn: _metronomeOn,
+                isClickTrackOn: _metronomeOn,
                 onPlay: _play,
                 onStop: _stop,
                 onStopLongPress: _resetTimer,
                 onRecord: _record,
-                onMetro: _showGuideTrackSettings,
+                onClickSettings: _showClickTrackSettings,
               ),
             ],
           ),
@@ -3567,23 +3979,23 @@ class WaveformPainter extends CustomPainter {
 class TransportControls extends StatelessWidget {
   final bool isPlaying;
   final bool isRecording;
-  final bool isMetronomeOn;
+  final bool isClickTrackOn;
   final VoidCallback onPlay;
   final VoidCallback onStop;
   final VoidCallback onStopLongPress;
   final VoidCallback onRecord;
-  final VoidCallback onMetro;
+  final VoidCallback onClickSettings;
 
   const TransportControls({
     super.key,
     required this.isPlaying,
     required this.isRecording,
-    required this.isMetronomeOn,
+    required this.isClickTrackOn,
     required this.onPlay,
     required this.onStop,
     required this.onStopLongPress,
     required this.onRecord,
-    required this.onMetro,
+    required this.onClickSettings,
   });
 
   @override
@@ -3617,10 +4029,10 @@ class TransportControls extends StatelessWidget {
             onTap: onRecord,
           ),
           TransportButton(
-            label: "METRO",
-            icon: Icons.timer,
-            isActive: isMetronomeOn,
-            onTap: onMetro,
+            label: "CLICK",
+            icon: Icons.graphic_eq,
+            isActive: isClickTrackOn,
+            onTap: onClickSettings,
           ),
         ],
       ),
