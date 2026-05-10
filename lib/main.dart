@@ -1,5 +1,5 @@
 /// ORPHEUS DECK
-/// Junkfeathers Tech Four-Track Recorder
+/// Orpheus Deck — four-track recorder
 ///
 /// IMPORTANT:
 /// This app is intentionally NOT a modern DAW.
@@ -705,7 +705,7 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
                                             padding: const EdgeInsets.symmetric(
                                                 horizontal: 8, vertical: 2),
                                             child: const Text(
-                                                "Junkfeathers Tech Multitrack Recorder",
+                                                "Four-Track Recorder",
                                                 style: TextStyle(
                                                     color: Colors.white54,
                                                     fontFamily: 'monospace',
@@ -1597,19 +1597,36 @@ class _RecorderScreenState extends State<RecorderScreen> {
   }
 
   Future<void> _shareExportEntry(ExportEntry e) async {
-    final uriStr = e.storageUri;
-    if (uriStr != null && uriStr.startsWith('content://')) {
-      await SharePlus.instance.share(ShareParams(
-        files: [XFile(uriStr, mimeType: 'audio/wav')],
-        text: 'Exported from Orpheus Deck',
-      ));
-      return;
-    }
-    if (e.absolutePath != null && File(e.absolutePath!).existsSync()) {
-      await SharePlus.instance.share(ShareParams(
-        files: [XFile(e.absolutePath!)],
-        text: 'Exported from Orpheus Deck',
-      ));
+    try {
+      final uriStr = e.storageUri;
+      // share_plus on Android treats paths as java.io.File and wraps FileProvider;
+      // MediaStore content:// URIs must be sent via ACTION_SEND + EXTRA_STREAM.
+      if (uriStr != null &&
+          uriStr.startsWith('content://') &&
+          Platform.isAndroid) {
+        debugPrint('Orpheus Deck: share export — MediaStore URI: $uriStr');
+        await _androidExportChannel.invokeMethod<void>('shareMusicExport', {
+          'uri': uriStr,
+        });
+        debugPrint('Orpheus Deck: share export — native share sheet launched');
+        return;
+      }
+      if (e.absolutePath != null && File(e.absolutePath!).existsSync()) {
+        final path = e.absolutePath!;
+        debugPrint('Orpheus Deck: share export — filesystem path: $path');
+        await SharePlus.instance.share(ShareParams(
+          files: [XFile(path)],
+          text: 'Exported from Orpheus Deck',
+        ));
+        return;
+      }
+      debugPrint(
+          'Orpheus Deck: share export — nothing to share for ${e.filename}');
+    } catch (err, st) {
+      debugPrint('Orpheus Deck: share export failed: $err\n$st');
+      if (mounted) {
+        _showSnackbar('SHARE FAILED');
+      }
     }
   }
 
@@ -1724,6 +1741,30 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
   }
 
+  /// Single path segment for exported WAV names; lowercase [a-z0-9._-].
+  String _exportFilenameSlug(String projectName) {
+    var s = projectName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '');
+    s = s.trim().replaceAll(RegExp(r'\s+'), '_');
+    s = s.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+    s = s.replaceAll(RegExp(r'_+'), '_');
+    while (s.startsWith('.')) {
+      s = s.substring(1);
+    }
+    s = s.replaceAll(RegExp(r'^_|_$'), '');
+    if (s.isEmpty) s = 'session_001';
+    if (s.length > 80) {
+      s = s.substring(0, 80).replaceAll(RegExp(r'_+$'), '');
+    }
+    return s.toLowerCase();
+  }
+
+  /// Matches examples like 2026-05-09_103045 (date + time with seconds for uniqueness).
+  String _exportFileTimestamp() {
+    final n = DateTime.now();
+    String z2(int v) => v.toString().padLeft(2, '0');
+    return '${n.year}-${z2(n.month)}-${z2(n.day)}_${z2(n.hour)}${z2(n.minute)}${z2(n.second)}';
+  }
+
   Future<void> _exportMix(bool isMasterMix) async {
     if (_isRecording || _isPlaying) _stop();
 
@@ -1735,11 +1776,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
       final tempDir = await getTemporaryDirectory();
       debugPrint('Orpheus Deck: FFmpeg temp write dir: ${tempDir.path}');
 
-      String timestamp = (DateTime.now().millisecondsSinceEpoch).toString();
-      String outName = isMasterMix
-          ? "mastermix_$timestamp.wav"
-          : "raw_mix_$timestamp.wav";
-      String outPath = '${tempDir.path}/orpheus_exp_$timestamp.wav';
+      final slug = _exportFilenameSlug(_projectName);
+      final mixSeg = isMasterMix ? 'mastermix' : 'raw_mix';
+      final stamp = _exportFileTimestamp();
+      final outName = '${slug}_${mixSeg}_$stamp.wav';
+      final tempId = DateTime.now().millisecondsSinceEpoch;
+      final outPath = '${tempDir.path}/orpheus_exp_$tempId.wav';
 
       List<String> inputs = [];
       List<String> filterParts = [];
@@ -3182,7 +3224,7 @@ class DeckHeader extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               const Text(
-                "JUNKFEATHERS TECH // MK-I",
+                "FOUR-TRACK RECORDER // MK-I",
                 style: TextStyle(
                   color: Colors.white54,
                   fontFamily: 'monospace',
