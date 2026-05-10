@@ -26,7 +26,6 @@ import 'package:flutter/services.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:audioplayers/audioplayers.dart';
 import 'package:just_audio/just_audio.dart' as ja;
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
@@ -961,7 +960,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
   String _metronomeSound = 'CLICK';
   bool _headphonesConfirmed = false;
 
-  late AudioPlayer _metronomePlayer;
+  /// Dedicated local playback — **not** one of the four track buses (mix/export path).
+  late ja.AudioPlayer _metroPlayer;
+  StreamSubscription<ja.PlaybackEvent>? _metroPlaybackSub;
+  String? _metroLastLoadedPath;
+  bool _metroTickInFlight = false;
+
   String _beepPath = '';
   String _clickPath = '';
   String _woodPath = '';
@@ -989,7 +993,14 @@ class _RecorderScreenState extends State<RecorderScreen> {
   void initState() {
     super.initState();
     _projectName = widget.projectName;
-    _metronomePlayer = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
+    _metroPlayer = ja.AudioPlayer();
+    _metroPlaybackSub = _metroPlayer.playbackEventStream.listen(
+      (_) {},
+      onError: (Object e, StackTrace st) {
+        debugPrint('Orpheus Deck: METRO playback stream error: $e\n$st');
+        _disableMetronomeDueToAudioConflict();
+      },
+    );
     _initMetronome();
     _initAudioSession();
 
@@ -1019,7 +1030,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
     _recorder.dispose();
 
-    _metronomePlayer.dispose();
+    _metroPlaybackSub?.cancel();
+    _metroPlaybackSub = null;
+    _metroPlayer.dispose();
     for (var player in _trackPlayers) {
       player.dispose();
     }
@@ -1102,44 +1115,107 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _woodPath = fWood.path;
   }
 
-  void _playMetronomeTick() {
-    String path = _clickPath;
-    if (_metronomeSound == 'BEEP') path = _beepPath;
-    if (_metronomeSound == 'WOOD') path = _woodPath;
-    if (path.isNotEmpty) {
-      debugPrint("Orpheus Deck: METRONOME TICK - $_metronomeSound");
-      _metronomePlayer.stop().then((_) {
-        _metronomePlayer.play(DeviceFileSource(path));
-      });
+  String _metroPathForCurrentSound() {
+    if (_metronomeSound == 'BEEP') return _beepPath;
+    if (_metronomeSound == 'WOOD') return _woodPath;
+    return _clickPath;
+  }
+
+  Future<void> _stopMetroPlayerSafe() async {
+    try {
+      await _metroPlayer.stop();
+    } catch (e, st) {
+      debugPrint('Orpheus Deck: METRO player stop error: $e\n$st');
     }
+  }
+
+  void _disableMetronomeDueToAudioConflict() {
+    debugPrint(
+        'Orpheus Deck: METRO DISABLED: AUDIO CONFLICT '
+        '(recording=$_isRecording playing=$_isPlaying overdub=$_isOverdubbing)');
+    _stopMetronomeTicker();
+    _metroLastLoadedPath = null;
+    unawaited(_stopMetroPlayerSafe());
+    if (!mounted) return;
+    setState(() => _metronomeOn = false);
+    _saveSession();
+    _showSnackbar('METRO DISABLED: AUDIO CONFLICT');
+  }
+
+  /// Local-only click — never routed into `record` / FFmpeg mix buses.
+  Future<void> _playMetronomeTick() async {
+    if (!_metronomeOn) return;
+    final path = _metroPathForCurrentSound();
+    if (path.isEmpty) return;
+
+    if (_metroTickInFlight) {
+      debugPrint(
+          'Orpheus Deck: METRO TICK SKIP (still playing) sound=$_metronomeSound bpm=$_bpm');
+      return;
+    }
+    _metroTickInFlight = true;
+
+    debugPrint(
+        'Orpheus Deck: METRO TICK sound=$_metronomeSound bpm=$_bpm '
+        'recording=$_isRecording playing=$_isPlaying overdub=$_isOverdubbing');
+
+    try {
+      await _metroPlayer.stop();
+      if (_metroLastLoadedPath != path) {
+        await _metroPlayer.setFilePath(path);
+        _metroLastLoadedPath = path;
+      }
+      await _metroPlayer.setVolume(1.0);
+      await _metroPlayer.seek(Duration.zero);
+      await _metroPlayer.play();
+    } catch (e, st) {
+      debugPrint(
+          'Orpheus Deck: METRO player error (recording=$_isRecording playing=$_isPlaying): $e\n$st');
+      _disableMetronomeDueToAudioConflict();
+    } finally {
+      _metroTickInFlight = false;
+    }
+  }
+
+  void _restartMetronomeTickerIfActive() {
+    if (!_metronomeOn) return;
+    if (!_isPlaying && !_isRecording) return;
+    debugPrint(
+        'Orpheus Deck: METRO RESTART bpm=$_bpm recording=$_isRecording playing=$_isPlaying');
+    _stopMetronomeTicker();
+    _startMetronomeTicker();
   }
 
   void _startMetronomeTicker() {
     _metronomeTimer?.cancel();
     if (!_metronomeOn) return;
-    int msPerBeat = (60000 / _bpm).round();
+    final int msPerBeat = (60000 / _bpm).round();
 
-    debugPrint("Orpheus Deck: METRONOME STARTING at $_bpm BPM");
+    debugPrint(
+        'Orpheus Deck: METRO TICKER START bpm=$_bpm intervalMs=$msPerBeat '
+        'recording=$_isRecording playing=$_isPlaying overdub=$_isOverdubbing');
 
     if (_isRecording) {
       Future.delayed(const Duration(milliseconds: 400), () {
         if (!_isRecording || !_metronomeOn) return;
-        _playMetronomeTick();
+        unawaited(_playMetronomeTick());
         _metronomeTimer =
             Timer.periodic(Duration(milliseconds: msPerBeat), (Timer t) {
-          _playMetronomeTick();
+          unawaited(_playMetronomeTick());
         });
       });
     } else {
-      _playMetronomeTick();
+      unawaited(_playMetronomeTick());
       _metronomeTimer =
           Timer.periodic(Duration(milliseconds: msPerBeat), (Timer t) {
-        _playMetronomeTick();
+        unawaited(_playMetronomeTick());
       });
     }
   }
 
   void _stopMetronomeTicker() {
+    debugPrint(
+        'Orpheus Deck: METRO TICKER STOP recording=$_isRecording playing=$_isPlaying');
     _metronomeTimer?.cancel();
   }
 
@@ -2108,7 +2184,18 @@ class _RecorderScreenState extends State<RecorderScreen> {
                           onTap: () {
                             setState(() => _metronomeOn = !_metronomeOn);
                             setDialogState(() {});
+                            debugPrint(
+                                'Orpheus Deck: METRO ${_metronomeOn ? "ON" : "OFF"} bpm=$_bpm '
+                                'recording=$_isRecording playing=$_isPlaying');
                             _saveSession();
+                            if (_metronomeOn) {
+                              if (_isPlaying || _isRecording) {
+                                _startMetronomeTicker();
+                              }
+                            } else {
+                              _stopMetronomeTicker();
+                              unawaited(_stopMetroPlayerSafe());
+                            }
                           },
                           child: Container(
                             padding: const EdgeInsets.symmetric(
@@ -2140,7 +2227,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
                               if (_bpm > 40) {
                                 setState(() => _bpm--);
                                 setDialogState(() {});
+                                debugPrint(
+                                    'Orpheus Deck: METRO BPM $_bpm recording=$_isRecording playing=$_isPlaying');
                                 _saveSession();
+                                _restartMetronomeTickerIfActive();
                               }
                             }),
                         Text("$_bpm",
@@ -2155,7 +2245,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
                               if (_bpm < 240) {
                                 setState(() => _bpm++);
                                 setDialogState(() {});
+                                debugPrint(
+                                    'Orpheus Deck: METRO BPM $_bpm recording=$_isRecording playing=$_isPlaying');
                                 _saveSession();
+                                _restartMetronomeTickerIfActive();
                               }
                             }),
                       ])
@@ -2679,13 +2772,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
       return;
     }
 
-    if (_metronomeOn) {
-      _showSnackbar("METRONOME DISABLED DURING RECORDING ON THIS BUILD");
-      _metronomePlayer.stop();
-      _stopMetronomeTicker();
-      setState(() => _metronomeOn = false);
-    }
-
     bool isOverdub = _trackFiles.any((file) => file != null);
     if (isOverdub && !_headphonesConfirmed) {
       _showHeadphonesWarning();
@@ -2772,8 +2858,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
           path: path,
         );
         debugPrint("Orpheus Deck: Recorder confirmed started at ${sw.elapsedMilliseconds}ms");
-      } catch (e) {
-        debugPrint("Orpheus Deck: Recorder start ERROR - $e");
+      } catch (e, st) {
+        debugPrint(
+            "Orpheus Deck: Recorder start ERROR metro=$_metronomeOn $e\n$st");
         sw.stop();
         return;
       }
@@ -2828,6 +2915,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
 
     _stopMetronomeTicker();
+    await _stopMetroPlayerSafe();
+
     bool recordedSomething = false;
 
     if (_isRecording) {
