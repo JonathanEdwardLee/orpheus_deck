@@ -1741,6 +1741,30 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
   }
 
+  /// Single path segment for exported WAV names; lowercase [a-z0-9._-].
+  String _exportFilenameSlug(String projectName) {
+    var s = projectName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '');
+    s = s.trim().replaceAll(RegExp(r'\s+'), '_');
+    s = s.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+    s = s.replaceAll(RegExp(r'_+'), '_');
+    while (s.startsWith('.')) {
+      s = s.substring(1);
+    }
+    s = s.replaceAll(RegExp(r'^_|_$'), '');
+    if (s.isEmpty) s = 'session_001';
+    if (s.length > 80) {
+      s = s.substring(0, 80).replaceAll(RegExp(r'_+$'), '');
+    }
+    return s.toLowerCase();
+  }
+
+  /// Matches examples like 2026-05-09_103045 (date + time with seconds for uniqueness).
+  String _exportFileTimestamp() {
+    final n = DateTime.now();
+    String z2(int v) => v.toString().padLeft(2, '0');
+    return '${n.year}-${z2(n.month)}-${z2(n.day)}_${z2(n.hour)}${z2(n.minute)}${z2(n.second)}';
+  }
+
   Future<void> _exportMix(bool isMasterMix) async {
     if (_isRecording || _isPlaying) _stop();
 
@@ -1752,11 +1776,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
       final tempDir = await getTemporaryDirectory();
       debugPrint('Orpheus Deck: FFmpeg temp write dir: ${tempDir.path}');
 
-      String timestamp = (DateTime.now().millisecondsSinceEpoch).toString();
-      String outName = isMasterMix
-          ? "mastermix_$timestamp.wav"
-          : "raw_mix_$timestamp.wav";
-      String outPath = '${tempDir.path}/orpheus_exp_$timestamp.wav';
+      final slug = _exportFilenameSlug(_projectName);
+      final mixSeg = isMasterMix ? 'mastermix' : 'raw_mix';
+      final stamp = _exportFileTimestamp();
+      final outName = '${slug}_${mixSeg}_$stamp.wav';
+      final tempId = DateTime.now().millisecondsSinceEpoch;
+      final outPath = '${tempDir.path}/orpheus_exp_$tempId.wav';
 
       List<String> inputs = [];
       List<String> filterParts = [];
