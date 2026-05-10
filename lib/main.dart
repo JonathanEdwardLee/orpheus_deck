@@ -22,13 +22,16 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:just_audio/just_audio.dart' as ja;
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+import 'package:open_file/open_file.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:audio_session/audio_session.dart' as as_sess;
 
@@ -67,6 +70,102 @@ class UndoState {
   bool get hasUndo => action != UndoAction.none;
 }
 
+/// Final mix export metadata (session.json). Raw track M4As stay internal-only.
+class ExportEntry {
+  final String filename;
+  /// User-facing location, e.g. Music/Orpheus Deck/foo.wav
+  final String displayPath;
+  final String? storageUri;
+  final String? absolutePath;
+  final String kind;
+  final DateTime createdAt;
+
+  ExportEntry({
+    required this.filename,
+    required this.displayPath,
+    this.storageUri,
+    this.absolutePath,
+    required this.kind,
+    required this.createdAt,
+  });
+
+  String get shareRef => storageUri ?? absolutePath ?? '';
+
+  ExportEntry copyWith({
+    String? filename,
+    String? displayPath,
+    String? storageUri,
+    String? absolutePath,
+    String? kind,
+    DateTime? createdAt,
+  }) {
+    return ExportEntry(
+      filename: filename ?? this.filename,
+      displayPath: displayPath ?? this.displayPath,
+      storageUri: storageUri ?? this.storageUri,
+      absolutePath: absolutePath ?? this.absolutePath,
+      kind: kind ?? this.kind,
+      createdAt: createdAt ?? this.createdAt,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'filename': filename,
+        'displayPath': displayPath,
+        if (storageUri != null) 'storageUri': storageUri,
+        if (absolutePath != null) 'absolutePath': absolutePath,
+        'kind': kind,
+        'createdAt': createdAt.toIso8601String(),
+      };
+
+  factory ExportEntry.fromJson(Map<String, dynamic> json) {
+    final abs = json['absolutePath'] as String?;
+    final fname = json['filename'] as String? ??
+        (abs != null ? abs.split(RegExp(r'[/\\]')).last : '');
+    return ExportEntry(
+      filename: fname,
+      displayPath: json['displayPath'] as String? ?? fname,
+      storageUri: json['storageUri'] as String?,
+      absolutePath: abs,
+      kind: json['kind'] as String? ?? 'RAW MIX',
+      createdAt: json['createdAt'] != null
+          ? DateTime.parse(json['createdAt'] as String)
+          : DateTime.now(),
+    );
+  }
+
+  /// Older sessions stored exports as plain filesystem paths.
+  factory ExportEntry.fromLegacyPath(String path) {
+    final name = path.split(RegExp(r'[/\\]')).last;
+    final lower = name.toLowerCase();
+    final kind = lower.contains('mastermix') || lower.contains('youtube_master')
+        ? 'MASTERMIX'
+        : 'RAW MIX';
+    return ExportEntry(
+      filename: name,
+      displayPath: path,
+      storageUri: null,
+      absolutePath: path,
+      kind: kind,
+      createdAt: DateTime.now(),
+    );
+  }
+}
+
+List<ExportEntry> parseExportsFromJson(dynamic raw) {
+  if (raw == null) return [];
+  if (raw is! List) return [];
+  final out = <ExportEntry>[];
+  for (final item in raw) {
+    if (item is String) {
+      out.add(ExportEntry.fromLegacyPath(item));
+    } else if (item is Map) {
+      out.add(ExportEntry.fromJson(Map<String, dynamic>.from(item)));
+    }
+  }
+  return out;
+}
+
 class Session {
   String projectName;
   DateTime createdAt;
@@ -78,7 +177,7 @@ class Session {
   List<double> trackVolumes;
   List<bool> trackMutes;
   List<bool> trackSolos;
-  List<String> exports;
+  List<ExportEntry> exports;
   int bpm;
   bool metronomeOn;
   String metronomeSound;
@@ -112,7 +211,7 @@ class Session {
       'trackVolumes': trackVolumes,
       'trackMutes': trackMutes,
       'trackSolos': trackSolos,
-      'exports': exports,
+      'exports': exports.map((e) => e.toJson()).toList(),
       'bpm': bpm,
       'metronomeOn': metronomeOn,
       'metronomeSound': metronomeSound,
@@ -142,7 +241,7 @@ class Session {
           json['trackMutes'] as List? ?? [false, false, false, false]),
       trackSolos: List<bool>.from(
           json['trackSolos'] as List? ?? [false, false, false, false]),
-      exports: List<String>.from(json['exports'] as List? ?? []),
+      exports: parseExportsFromJson(json['exports']),
       bpm: json['bpm'] as int? ?? 120,
       metronomeOn: json['metronomeOn'] as bool? ?? false,
       metronomeSound: json['metronomeSound'] as String? ?? 'CLICK',
@@ -852,7 +951,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
   final List<double> _trackVolumes = [1.0, 1.0, 1.0, 1.0];
   final List<bool> _trackMutes = [false, false, false, false];
   final List<bool> _trackSolos = [false, false, false, false];
-  List<String> _exports = [];
+  List<ExportEntry> _exports = [];
+
+  static const MethodChannel _androidExportChannel =
+      MethodChannel('com.junkfeathers.orpheusdeck/export');
 
   int _bpm = 120;
   bool _metronomeOn = false;
@@ -1154,6 +1256,11 @@ class _RecorderScreenState extends State<RecorderScreen> {
           }
         }
 
+        final keptExports = <ExportEntry>[];
+        for (final e in session.exports) {
+          if (await _exportEntryStillValid(e)) keptExports.add(e);
+        }
+
         setState(() {
           _projectName = session.projectName;
           _sessionCreatedAt = session.createdAt;
@@ -1166,8 +1273,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
           }
           _waveformCache.addAll(session.waveformCache);
 
-          _exports = List<String>.from(session.exports);
-          _exports.removeWhere((path) => !File(path).existsSync());
+          _exports = keptExports;
 
           _bpm = session.bpm;
           _metronomeOn = session.metronomeOn;
@@ -1281,12 +1387,18 @@ class _RecorderScreenState extends State<RecorderScreen> {
           _waveformCache.clear();
           _waveformCache.addAll(newCache);
 
-          List<String> newExports = [];
-          for (String exportPath in _exports) {
-            String newPath = exportPath.replaceFirst(
-                '/OrpheusDeck/${_lastUndo.newName}/',
-                '/OrpheusDeck/${_lastUndo.oldName}/');
-            newExports.add(newPath);
+          final newExports = <ExportEntry>[];
+          for (final e in _exports) {
+            final ap = e.absolutePath;
+            if (ap != null &&
+                ap.contains('/OrpheusDeck/${_lastUndo.newName}/')) {
+              newExports.add(e.copyWith(
+                  absolutePath: ap.replaceFirst(
+                      '/OrpheusDeck/${_lastUndo.newName}/',
+                      '/OrpheusDeck/${_lastUndo.oldName}/')));
+            } else {
+              newExports.add(e);
+            }
           }
           _exports.clear();
           _exports.addAll(newExports);
@@ -1340,11 +1452,16 @@ class _RecorderScreenState extends State<RecorderScreen> {
         _waveformCache.clear();
         _waveformCache.addAll(newCache);
 
-        List<String> newExports = [];
-        for (String exportPath in _exports) {
-          String newPath = exportPath.replaceFirst(
-              '/OrpheusDeck/$_projectName/', '/OrpheusDeck/$safeName/');
-          newExports.add(newPath);
+        final newExports = <ExportEntry>[];
+        for (final e in _exports) {
+          final ap = e.absolutePath;
+          if (ap != null && ap.contains('/OrpheusDeck/$_projectName/')) {
+            newExports.add(e.copyWith(
+                absolutePath: ap.replaceFirst(
+                    '/OrpheusDeck/$_projectName/', '/OrpheusDeck/$safeName/')));
+          } else {
+            newExports.add(e);
+          }
         }
         _exports.clear();
         _exports.addAll(newExports);
@@ -1370,7 +1487,244 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _showSnackbar("NEW PROJECT CREATED");
   }
 
-  Future<void> _exportMix(bool isYoutubeMaster) async {
+  Future<bool> _exportEntryStillValid(ExportEntry e) async {
+    if (e.absolutePath != null) {
+      return File(e.absolutePath!).existsSync();
+    }
+    if (Platform.isAndroid &&
+        e.storageUri != null &&
+        e.storageUri!.startsWith('content://')) {
+      try {
+        final ok = await _androidExportChannel.invokeMethod<bool>(
+            'contentUriExists', {'uri': e.storageUri});
+        return ok ?? true;
+      } catch (_) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Future<Directory> _nonAndroidExportDirectory() async {
+    final downloads = await getDownloadsDirectory();
+    if (downloads != null) {
+      return Directory(
+          '${downloads.path}${Platform.pathSeparator}Orpheus Deck');
+    }
+    final docs = await getApplicationDocumentsDirectory();
+    return Directory(
+        '${docs.path}${Platform.pathSeparator}OrpheusDeckExports');
+  }
+
+  String _nonAndroidDisplayPath(String fileName, Directory destDir) {
+    final p = destDir.path;
+    if (p.contains('Download')) {
+      return 'Downloads/Orpheus Deck/$fileName';
+    }
+    return 'Documents/OrpheusDeckExports/$fileName';
+  }
+
+  Future<ExportEntry?> _finalizeExportAfterFfmpeg({
+    required String tempPath,
+    required String fileName,
+    required String kind,
+  }) async {
+    if (Platform.isAndroid) {
+      try {
+        final dynamic raw = await _androidExportChannel.invokeMethod(
+          'publishToMusicFolder',
+          <String, dynamic>{
+            'sourcePath': tempPath,
+            'fileName': fileName,
+          },
+        );
+        await _deleteExportIfExists(tempPath);
+        if (raw is! Map) return null;
+        final uri = raw['uri']?.toString();
+        final displayPath =
+            raw['displayPath']?.toString() ?? 'Music/Orpheus Deck/$fileName';
+        if (uri == null) return null;
+        debugPrint(
+            'Orpheus Deck: published Android uri=$uri displayPath=$displayPath');
+        return ExportEntry(
+          filename: fileName,
+          displayPath: displayPath,
+          storageUri: uri,
+          absolutePath: null,
+          kind: kind,
+          createdAt: DateTime.now(),
+        );
+      } on PlatformException catch (e, st) {
+        debugPrint(
+            'Orpheus Deck: publishToMusicFolder ${e.code} ${e.message}\n$st');
+        await _deleteExportIfExists(tempPath);
+        return null;
+      }
+    }
+
+    final destDir = await _nonAndroidExportDirectory();
+    await destDir.create(recursive: true);
+    final destPath =
+        '${destDir.path}${Platform.pathSeparator}$fileName';
+    await File(tempPath).copy(destPath);
+    await _deleteExportIfExists(tempPath);
+    debugPrint('Orpheus Deck: published non-Android path=$destPath');
+    return ExportEntry(
+      filename: fileName,
+      displayPath: _nonAndroidDisplayPath(fileName, destDir),
+      storageUri: null,
+      absolutePath: destPath,
+      kind: kind,
+      createdAt: DateTime.now(),
+    );
+  }
+
+  Future<void> _deleteExportEntry(ExportEntry e) async {
+    if (Platform.isAndroid &&
+        e.storageUri != null &&
+        e.storageUri!.startsWith('content://')) {
+      try {
+        await _androidExportChannel
+            .invokeMethod('deleteMusicExport', {'uri': e.storageUri});
+      } catch (err) {
+        debugPrint('Orpheus Deck: deleteMusicExport $err');
+      }
+      return;
+    }
+    if (e.absolutePath != null) {
+      await _deleteExportIfExists(e.absolutePath!);
+    }
+  }
+
+  Future<void> _shareExportEntry(ExportEntry e) async {
+    final uriStr = e.storageUri;
+    if (uriStr != null && uriStr.startsWith('content://')) {
+      await SharePlus.instance.share(ShareParams(
+        files: [XFile(uriStr, mimeType: 'audio/wav')],
+        text: 'Exported from Orpheus Deck',
+      ));
+      return;
+    }
+    if (e.absolutePath != null && File(e.absolutePath!).existsSync()) {
+      await SharePlus.instance.share(ShareParams(
+        files: [XFile(e.absolutePath!)],
+        text: 'Exported from Orpheus Deck',
+      ));
+    }
+  }
+
+  Future<void> _tryOpenExportLocation(ExportEntry entry) async {
+    if (Platform.isAndroid && entry.storageUri != null) {
+      try {
+        final opened = await _androidExportChannel
+            .invokeMethod<bool>('tryOpenExportLocation', {
+          'uri': entry.storageUri,
+        });
+        if (opened == true && mounted) return;
+      } catch (_) {}
+      if (mounted) {
+        _showSnackbar('Saved to Music / Orpheus Deck');
+      }
+      return;
+    }
+    if (entry.absolutePath != null) {
+      final dir = File(entry.absolutePath!).parent.path;
+      final OpenResult r = await OpenFile.open(dir);
+      debugPrint(
+          'Orpheus Deck: OpenFile dir type=${r.type} message=${r.message}');
+      if (r.type != ResultType.done && mounted) {
+        _showSnackbar('Saved to ${entry.displayPath}');
+      }
+    }
+  }
+
+  Future<void> _deleteExportIfExists(String path) async {
+    try {
+      final f = File(path);
+      if (await f.exists()) await f.delete();
+    } catch (e) {
+      debugPrint('Orpheus Deck: delete export failed: $e');
+    }
+  }
+
+  Future<int?> _awaitStableExportSize(File file) async {
+    const attempts = 10;
+    const delay = Duration(milliseconds: 50);
+    int? last;
+    for (var i = 0; i < attempts; i++) {
+      if (!await file.exists()) return null;
+      final len = await file.length();
+      if (last != null && len == last && len > 48) return len;
+      last = len;
+      await Future<void>.delayed(delay);
+    }
+    return await file.exists() ? await file.length() : null;
+  }
+
+  bool _wavRiffWaveHeaderLooksValid(File file) {
+    RandomAccessFile? raf;
+    try {
+      if (file.lengthSync() < 12) return false;
+      raf = file.openSync(mode: FileMode.read);
+      final b = raf.readSync(12);
+      if (b.length < 12) return false;
+      final riff = String.fromCharCodes(b.sublist(0, 4));
+      final wave = String.fromCharCodes(b.sublist(8, 12));
+      return riff == 'RIFF' && wave == 'WAVE';
+    } catch (e) {
+      debugPrint('Orpheus Deck: WAV header check failed: $e');
+      return false;
+    } finally {
+      raf?.closeSync();
+    }
+  }
+
+  Future<({bool ok, String detail, String? durationSec})> _verifyExportedWav(
+      String path) async {
+    final file = File(path);
+    final size = await _awaitStableExportSize(file);
+    debugPrint('Orpheus Deck: export output path: $path');
+    debugPrint('Orpheus Deck: export output size (stable): $size bytes');
+    if (size == null || size <= 48) {
+      return (
+        ok: false,
+        detail: 'missing_or_tiny_file size=$size',
+        durationSec: null,
+      );
+    }
+    if (!_wavRiffWaveHeaderLooksValid(file)) {
+      return (ok: false, detail: 'invalid_riff_wave_header', durationSec: null);
+    }
+    try {
+      final session = await FFprobeKit.getMediaInformation(path);
+      final info = session.getMediaInformation();
+      if (info == null) {
+        return (ok: false, detail: 'ffprobe_no_media_information', durationSec: null);
+      }
+      final durStr = info.getDuration();
+      final durSec = double.tryParse(durStr ?? '');
+      debugPrint(
+          'Orpheus Deck: ffprobe format=${info.getFormat()} duration=$durStr format_size=${info.getSize()}');
+      final audioStreams =
+          info.getStreams().where((s) => s.getType() == 'audio').toList();
+      final a0 = audioStreams.isNotEmpty ? audioStreams.first : null;
+      final codec = a0?.getCodec();
+      final sampleRate = a0?.getSampleRate();
+      debugPrint(
+          'Orpheus Deck: ffprobe audio0 codec=$codec sample_rate=$sampleRate');
+      final codecOk = codec == 'pcm_s16le';
+      final durOk = durSec != null && durSec > 0.004;
+      final ok = codecOk && durOk;
+      final detail =
+          'codec=$codec duration=$durStr codecOk=$codecOk durOk=$durOk';
+      return (ok: ok, detail: detail, durationSec: durStr);
+    } catch (e, st) {
+      debugPrint('Orpheus Deck: ffprobe error: $e\n$st');
+      return (ok: false, detail: 'ffprobe: $e', durationSec: null);
+    }
+  }
+
+  Future<void> _exportMix(bool isMasterMix) async {
     if (_isRecording || _isPlaying) _stop();
 
     setState(() {
@@ -1378,15 +1732,14 @@ class _RecorderScreenState extends State<RecorderScreen> {
     });
 
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final projDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
-      if (!await projDir.exists()) await projDir.create(recursive: true);
+      final tempDir = await getTemporaryDirectory();
+      debugPrint('Orpheus Deck: FFmpeg temp write dir: ${tempDir.path}');
 
       String timestamp = (DateTime.now().millisecondsSinceEpoch).toString();
-      String outName = isYoutubeMaster
-          ? "youtube_master_$timestamp.wav"
+      String outName = isMasterMix
+          ? "mastermix_$timestamp.wav"
           : "raw_mix_$timestamp.wav";
-      String outPath = '${projDir.path}/$outName';
+      String outPath = '${tempDir.path}/orpheus_exp_$timestamp.wav';
 
       List<String> inputs = [];
       List<String> filterParts = [];
@@ -1436,7 +1789,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
         outPad = "[mix]";
       }
 
-      if (isYoutubeMaster) {
+      if (isMasterMix) {
         filterGraph += ";${outPad}loudnorm=I=-14:TP=-1:LRA=11[master]";
         outPad = "[master]";
       }
@@ -1447,32 +1800,101 @@ class _RecorderScreenState extends State<RecorderScreen> {
         filterGraph,
         "-map",
         outPad,
-        outPath
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "44100",
+        "-ac",
+        "1",
+        "-f",
+        "wav",
+        "-y",
+        outPath,
       ];
 
+      final String cmdLogged = command
+          .map((a) => (a.contains(' ') || a.contains('"'))
+              ? '"${a.replaceAll('"', r'\"')}"'
+              : a)
+          .join(' ');
+      debugPrint('Orpheus Deck: FFmpeg full command: ffmpeg $cmdLogged');
+
       FFmpegKit.executeWithArgumentsAsync(command, (session) async {
-        final returnCode = await session.getReturnCode();
-        if (ReturnCode.isSuccess(returnCode)) {
+        try {
+          final returnCode = await session.getReturnCode();
+          final rcVal = returnCode?.getValue();
+          final logText = await session.getLogsAsString();
+          debugPrint('Orpheus Deck: FFmpeg exit code: $rcVal');
+          if (logText.isNotEmpty) {
+            debugPrint('Orpheus Deck: FFmpeg output:\n$logText');
+          }
+
+          if (ReturnCode.isCancel(returnCode)) {
+            await _deleteExportIfExists(outPath);
+            if (mounted) _showSnackbar("EXPORT CANCELED");
+            return;
+          }
+          if (!ReturnCode.isSuccess(returnCode)) {
+            await _deleteExportIfExists(outPath);
+            if (mounted) {
+              _showSnackbar("ERR: EXPORT FAILED (ffmpeg $rcVal)");
+            }
+            return;
+          }
+
+          final ver = await _verifyExportedWav(outPath);
+          debugPrint(
+              'Orpheus Deck: export verify ok=${ver.ok} detail=${ver.detail} duration=${ver.durationSec ?? "?"}');
+
+          if (!ver.ok) {
+            await _deleteExportIfExists(outPath);
+            if (mounted) _showSnackbar("ERR: EXPORT VERIFY FAILED");
+            return;
+          }
+
+          if (!mounted) return;
+          final kind = isMasterMix ? 'MASTERMIX' : 'RAW MIX';
+          final entry = await _finalizeExportAfterFfmpeg(
+            tempPath: outPath,
+            fileName: outName,
+            kind: kind,
+          );
+          if (entry == null) {
+            if (mounted) {
+              _showSnackbar(Platform.isAndroid
+                  ? 'ERR: SAVE TO MUSIC FAILED (ANDROID 10+)'
+                  : 'ERR: EXPORT SAVE FAILED');
+            }
+            return;
+          }
+
           setState(() {
-            _exports.add(outPath);
+            _exports.add(entry);
           });
-          _saveSession();
-          _showExportSuccessDialog(outPath);
-        } else if (ReturnCode.isCancel(returnCode)) {
-          final file = File(outPath);
-          if (file.existsSync()) file.deleteSync();
-          _showSnackbar("EXPORT CANCELED");
-        } else {
-          _showSnackbar("ERR: EXPORT FAILED");
+          await _saveSession();
+          if (!mounted) return;
+          _showExportSuccessDialog(
+            entry: entry,
+            durationSec: ver.durationSec,
+          );
+        } catch (e, st) {
+          debugPrint('Orpheus Deck: export callback error: $e\n$st');
+          await _deleteExportIfExists(outPath);
+          if (mounted) _showSnackbar("ERR: EXPORT FAILED");
+        } finally {
+          if (mounted) {
+            setState(() {
+              _isExporting = false;
+              _exportSessionId = null;
+            });
+          }
         }
-        setState(() {
-          _isExporting = false;
-          _exportSessionId = null;
-        });
       }).then((session) {
         _exportSessionId = session.getSessionId();
       });
     } catch (e) {
+      debugPrint('Orpheus Deck: export setup error: $e');
       _showSnackbar("ERR: EXPORT FAILED");
       setState(() {
         _isExporting = false;
@@ -1480,30 +1902,48 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
   }
 
-  void _showExportSuccessDialog(String path) {
+  void _showExportSuccessDialog({
+    required ExportEntry entry,
+    String? durationSec,
+  }) {
+    if (entry.storageUri != null) {
+      debugPrint('Orpheus Deck: export storageUri=${entry.storageUri}');
+    }
     showDialog(
         context: context,
         builder: (context) {
+          final String body =
+              'Saved:\n${entry.displayPath}\n\nKind: ${entry.kind}\nDuration (ffprobe): ${durationSec ?? '?'}\n';
           return AlertDialog(
             backgroundColor: Colors.black,
             shape: Border.all(color: Colors.white, width: 2),
             title: const Text("EXPORT COMPLETE",
                 style: TextStyle(color: Colors.white, fontFamily: 'monospace')),
             content: SelectableText(
-              "Saved to:\n$path",
+              body,
               style: const TextStyle(
                   color: Colors.white54, fontFamily: 'monospace', fontSize: 10),
             ),
             actions: [
               TextButton(
-                onPressed: () {
-                  SharePlus.instance.share(ShareParams(
-                      files: [XFile(path)],
-                      text: 'Exported from Orpheus Deck'));
+                onPressed: () async {
+                  if (!_exportShareLooksValid(entry)) {
+                    _showSnackbar("ERR: EXPORT FILE INVALID");
+                    return;
+                  }
+                  await _shareExportEntry(entry);
                 },
                 child: const Text("SHARE",
                     style: TextStyle(
                         color: Colors.white, fontFamily: 'monospace')),
+              ),
+              TextButton(
+                onPressed: () async {
+                  await _tryOpenExportLocation(entry);
+                },
+                child: const Text("OPEN EXPORT LOCATION",
+                    style: TextStyle(
+                        color: Colors.white70, fontFamily: 'monospace')),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(context),
@@ -1518,34 +1958,32 @@ class _RecorderScreenState extends State<RecorderScreen> {
         });
   }
 
-  void _showExportOptionsDialog(String path) {
-    String filename = path.split(RegExp(r'[/\\]')).last;
+  void _showExportOptionsDialog(ExportEntry entry) {
     showDialog(
         context: context,
         builder: (context) {
           return AlertDialog(
             backgroundColor: Colors.black,
             shape: Border.all(color: Colors.white, width: 2),
-            title: Text(filename,
+            title: Text(entry.filename,
                 style: const TextStyle(
                     color: Colors.white,
                     fontFamily: 'monospace',
                     fontSize: 12)),
-            content: const Text("What would you like to do?",
-                style: TextStyle(
-                    color: Colors.white54,
-                    fontFamily: 'monospace',
-                    fontSize: 10)),
+            content: Text(
+              '${entry.kind}\n${entry.displayPath}',
+              style: const TextStyle(
+                  color: Colors.white54,
+                  fontFamily: 'monospace',
+                  fontSize: 10),
+            ),
             actions: [
               TextButton(
-                onPressed: () {
+                onPressed: () async {
                   Navigator.pop(context);
-                  final file = File(path);
-                  if (file.existsSync()) {
-                    file.deleteSync();
-                  }
+                  await _deleteExportEntry(entry);
                   setState(() {
-                    _exports.remove(path);
+                    _exports.removeWhere((x) => _sameExportEntry(x, entry));
                   });
                   _saveSession();
                   _showSnackbar("EXPORT DELETED");
@@ -1555,11 +1993,13 @@ class _RecorderScreenState extends State<RecorderScreen> {
                         color: Colors.white, fontFamily: 'monospace')),
               ),
               TextButton(
-                onPressed: () {
+                onPressed: () async {
                   Navigator.pop(context);
-                  SharePlus.instance.share(ShareParams(
-                      files: [XFile(path)],
-                      text: 'Exported from Orpheus Deck'));
+                  if (!_exportShareLooksValid(entry)) {
+                    _showSnackbar("ERR: EXPORT FILE INVALID OR MISSING");
+                    return;
+                  }
+                  await _shareExportEntry(entry);
                 },
                 child: const Text("SHARE",
                     style: TextStyle(
@@ -1570,6 +2010,36 @@ class _RecorderScreenState extends State<RecorderScreen> {
             ],
           );
         });
+  }
+
+  bool _quickExportLooksValidSync(File file) {
+    try {
+      if (!file.existsSync()) return false;
+      if (file.lengthSync() <= 48) return false;
+      return _wavRiffWaveHeaderLooksValid(file);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _exportShareLooksValid(ExportEntry e) {
+    if (e.storageUri != null && e.storageUri!.startsWith('content://')) {
+      return true;
+    }
+    if (e.absolutePath != null) {
+      return _quickExportLooksValidSync(File(e.absolutePath!));
+    }
+    return false;
+  }
+
+  bool _sameExportEntry(ExportEntry a, ExportEntry b) {
+    if (a.storageUri != null && b.storageUri != null) {
+      return a.storageUri == b.storageUri;
+    }
+    if (a.absolutePath != null && b.absolutePath != null) {
+      return a.absolutePath == b.absolutePath;
+    }
+    return identical(a, b);
   }
 
   void _showMetronomeMenu() {
@@ -1726,7 +2196,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
                     _exportMix(false);
                   }),
                   const SizedBox(height: 8),
-                  _menuButton("EXPORT YT MASTER", () {
+                  _menuButton("EXPORT MASTERMIX", () {
                     Navigator.pop(context);
                     _exportMix(true);
                   }),
@@ -1749,13 +2219,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
                             fontSize: 10),
                         textAlign: TextAlign.center)
                   else
-                    ..._exports.map((path) {
-                      String filename = path.split(RegExp(r'[/\\]')).last;
+                    ..._exports.map((ExportEntry e) {
                       return Padding(
                         padding: const EdgeInsets.only(bottom: 8.0),
-                        child: _menuButton(filename, () {
+                        child: _menuButton(e.filename, () {
                           Navigator.pop(context);
-                          _showExportOptionsDialog(path);
+                          _showExportOptionsDialog(e);
                         }),
                       );
                     }),

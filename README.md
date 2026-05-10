@@ -69,7 +69,7 @@ Sometimes constraints create better art.
 - Waveform visualization
 - Mixer controls (volume / mute / solo)
 - Raw mix export
-- YouTube-ready loudness export
+- MASTERMIX loudness export (broadcast-style loudnorm)
 - Android-native offline recording
 - Lo-fi bleed recording philosophy
 - Hardware-inspired transport controls
