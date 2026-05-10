@@ -1,5 +1,6 @@
 package com.junkfeathers.orpheusdeck
 
+import android.content.ClipData
 import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
@@ -91,6 +92,35 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     } catch (_: Exception) {
                         result.success(false)
+                    }
+                }
+
+                /**
+                 * share_plus maps paths to java.io.File and FileProvider; it cannot pass
+                 * MediaStore content:// URIs. Share the stored URI directly (scoped-storage safe).
+                 */
+                "shareMusicExport" -> {
+                    val uriStr = call.argument<String>("uri")
+                    if (uriStr.isNullOrBlank()) {
+                        result.error("bad_args", "missing uri", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val uri = Uri.parse(uriStr)
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "audio/wav"
+                            clipData = ClipData.newUri(
+                                contentResolver,
+                                "Orpheus Deck export",
+                                uri,
+                            )
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        startActivity(Intent.createChooser(send, "Share export"))
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("share_failed", e.message, null)
                     }
                 }
 

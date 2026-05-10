@@ -1597,19 +1597,36 @@ class _RecorderScreenState extends State<RecorderScreen> {
   }
 
   Future<void> _shareExportEntry(ExportEntry e) async {
-    final uriStr = e.storageUri;
-    if (uriStr != null && uriStr.startsWith('content://')) {
-      await SharePlus.instance.share(ShareParams(
-        files: [XFile(uriStr, mimeType: 'audio/wav')],
-        text: 'Exported from Orpheus Deck',
-      ));
-      return;
-    }
-    if (e.absolutePath != null && File(e.absolutePath!).existsSync()) {
-      await SharePlus.instance.share(ShareParams(
-        files: [XFile(e.absolutePath!)],
-        text: 'Exported from Orpheus Deck',
-      ));
+    try {
+      final uriStr = e.storageUri;
+      // share_plus on Android treats paths as java.io.File and wraps FileProvider;
+      // MediaStore content:// URIs must be sent via ACTION_SEND + EXTRA_STREAM.
+      if (uriStr != null &&
+          uriStr.startsWith('content://') &&
+          Platform.isAndroid) {
+        debugPrint('Orpheus Deck: share export — MediaStore URI: $uriStr');
+        await _androidExportChannel.invokeMethod<void>('shareMusicExport', {
+          'uri': uriStr,
+        });
+        debugPrint('Orpheus Deck: share export — native share sheet launched');
+        return;
+      }
+      if (e.absolutePath != null && File(e.absolutePath!).existsSync()) {
+        final path = e.absolutePath!;
+        debugPrint('Orpheus Deck: share export — filesystem path: $path');
+        await SharePlus.instance.share(ShareParams(
+          files: [XFile(path)],
+          text: 'Exported from Orpheus Deck',
+        ));
+        return;
+      }
+      debugPrint(
+          'Orpheus Deck: share export — nothing to share for ${e.filename}');
+    } catch (err, st) {
+      debugPrint('Orpheus Deck: share export failed: $err\n$st');
+      if (mounted) {
+        _showSnackbar('SHARE FAILED');
+      }
     }
   }
 
