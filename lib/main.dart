@@ -1600,7 +1600,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     final uriStr = e.storageUri;
     if (uriStr != null && uriStr.startsWith('content://')) {
       await SharePlus.instance.share(ShareParams(
-        files: [XFile.fromUri(Uri.parse(uriStr))],
+        files: [XFile(uriStr, mimeType: 'audio/wav')],
         text: 'Exported from Orpheus Deck',
       ));
       return;
