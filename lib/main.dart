@@ -1,5 +1,5 @@
 /// ORPHEUS DECK
-/// Junkfeathers Tech Four-Track Recorder
+/// Orpheus Deck — four-track recorder
 ///
 /// IMPORTANT:
 /// This app is intentionally NOT a modern DAW.
@@ -705,7 +705,7 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
                                             padding: const EdgeInsets.symmetric(
                                                 horizontal: 8, vertical: 2),
                                             child: const Text(
-                                                "Junkfeathers Tech Multitrack Recorder",
+                                                "Four-Track Recorder",
                                                 style: TextStyle(
                                                     color: Colors.white54,
                                                     fontFamily: 'monospace',
@@ -3199,7 +3199,7 @@ class DeckHeader extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               const Text(
-                "JUNKFEATHERS TECH // MK-I",
+                "FOUR-TRACK RECORDER // MK-I",
                 style: TextStyle(
                   color: Colors.white54,
                   fontFamily: 'monospace',
