@@ -915,49 +915,128 @@ class CassettePainter extends CustomPainter {
 
     final RRect windowRect = RRect.fromRectAndRadius(
         Rect.fromLTWH(winX, winY, winW, winH), const Radius.circular(4));
-    canvas.drawRRect(windowRect, paint);
 
-    double reelR = winH * 0.45;
-    double leftReelX = winX + winW * 0.15;
-    double rightReelX = winX + winW * 0.85;
-    double reelY = winY + winH / 2;
+    // Reel window visuals match [TapeReelTransport] / [_CassetteWindowPainter]
+    // (static tape-at-start: left pack large, right pack small).
+    final rect = windowRect.outerRect;
+    final midY = rect.center.dy;
+    final leftCx = rect.left + rect.width * 0.21;
+    final rightCx = rect.left + rect.width * 0.79;
+    const leftFill = 1.0;
+    const rightFill = 0.0;
 
-    canvas.drawLine(Offset(leftReelX, reelY + reelR),
-        Offset(rightReelX, reelY + reelR), paint);
-    canvas.drawLine(Offset(leftReelX, reelY - reelR),
-        Offset(rightReelX, reelY - reelR), paint);
+    final tapeMaxR = min(rect.height * 0.46, rect.width * 0.2);
+    final tapeMinR = tapeMaxR * 0.22;
+    final tapeLeftR = tapeMinR + (tapeMaxR - tapeMinR) * leftFill;
+    final tapeRightR = tapeMinR + (tapeMaxR - tapeMinR) * rightFill;
 
-    void drawReel(double cx, double cy, double radius, double rotation) {
-      canvas.drawCircle(Offset(cx, cy), radius, paint);
-      canvas.drawCircle(Offset(cx, cy), radius * 0.3, paint);
+    final hubR = tapeMaxR * 0.14;
+    final spokeInner = hubR * 1.15;
+    final spokeOuter = tapeMaxR * 0.34;
 
-      canvas.save();
-      canvas.translate(cx, cy);
-      canvas.rotate(rotation);
-      for (int i = 0; i < 3; i++) {
-        canvas.rotate(2 * pi / 3);
-        canvas.drawLine(Offset(0, radius * 0.3), Offset(0, radius), paint);
+    canvas.save();
+    canvas.clipRRect(windowRect);
+
+    canvas.drawRRect(
+      windowRect,
+      Paint()
+        ..color = Colors.black
+        ..style = PaintingStyle.fill,
+    );
+
+    final tapeFill = Paint()
+      ..color = Colors.white.withValues(alpha: 0.14)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(Offset(leftCx, midY), tapeLeftR, tapeFill);
+    canvas.drawCircle(Offset(rightCx, midY), tapeRightR, tapeFill);
+
+    final lip = Paint()
+      ..color = Colors.white.withValues(alpha: 0.2)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    canvas.drawCircle(Offset(leftCx, midY), tapeLeftR, lip);
+    canvas.drawCircle(Offset(rightCx, midY), tapeRightR, lip);
+
+    final yLow = midY + min(tapeLeftR, tapeRightR) * 0.72;
+    final yHigh = midY - min(tapeLeftR, tapeRightR) * 0.72;
+    final leftEdgeX = leftCx + tapeLeftR;
+    final rightEdgeX = rightCx - tapeRightR;
+    if (rightEdgeX > leftEdgeX + 4) {
+      final pathPaint = Paint()
+        ..color = Colors.white.withValues(alpha: 0.12)
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.square;
+      canvas.drawLine(
+          Offset(leftEdgeX, yHigh), Offset(rightEdgeX, yHigh), pathPaint);
+      canvas.drawLine(
+          Offset(leftEdgeX, yLow), Offset(rightEdgeX, yLow), pathPaint);
+      final pathFlow = spinProgress;
+      if (pathFlow > 0) {
+        const dash = 4.0;
+        final off = pathFlow * dash * 2;
+        final thin = Paint()
+          ..color = Colors.white.withValues(alpha: 0.09)
+          ..strokeWidth = 1;
+        double x = leftEdgeX - off % (dash * 2);
+        while (x < rightEdgeX) {
+          canvas.drawLine(
+              Offset(x, yHigh - 1), Offset(x + dash, yHigh - 1), thin);
+          x += dash * 2;
+        }
       }
-      canvas.restore();
     }
 
-    canvas.drawCircle(
-        Offset(leftReelX, reelY),
-        winH * 0.8,
-        Paint()
-          ..color = Colors.white24
-          ..style = PaintingStyle.fill);
-    canvas.drawCircle(
-        Offset(rightReelX, reelY),
-        winH * 0.5,
-        Paint()
-          ..color = Colors.white24
-          ..style = PaintingStyle.fill);
+    final base = spinProgress * 2 * pi;
+    final rotL =
+        base * (0.52 + 0.48 * (0.35 + 0.65 * (1.0 - leftFill)));
+    final rotR =
+        base * (0.52 + 0.48 * (0.35 + 0.65 * (1.0 - rightFill)));
 
-    double rotL = spinProgress * 2 * pi;
-    double rotR = spinProgress * 3 * pi;
-    drawReel(leftReelX, reelY, reelR, rotL);
-    drawReel(rightReelX, reelY, reelR, rotR);
+    void drawHub(double cx, double cy, double rot) {
+      canvas.save();
+      canvas.translate(cx, cy);
+      canvas.rotate(rot);
+      final sp = Paint()
+        ..color = Colors.white.withValues(alpha: 0.55)
+        ..strokeWidth = 1.2
+        ..strokeCap = StrokeCap.square;
+      for (int k = 0; k < 3; k++) {
+        final a = k * 2 * pi / 3;
+        final p1 = Offset(cos(a), sin(a)) * spokeInner;
+        final p2 = Offset(cos(a), sin(a)) * spokeOuter;
+        canvas.drawLine(p1, p2, sp);
+      }
+      canvas.restore();
+
+      canvas.drawCircle(
+        Offset(cx, cy),
+        hubR,
+        Paint()
+          ..color = Colors.black
+          ..style = PaintingStyle.fill,
+      );
+      canvas.drawCircle(
+        Offset(cx, cy),
+        hubR,
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.75)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1,
+      );
+    }
+
+    drawHub(leftCx, midY, rotL);
+    drawHub(rightCx, midY, rotR);
+
+    canvas.restore();
+
+    canvas.drawRRect(
+      windowRect,
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.38)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
 
     void drawScrew(double cx, double cy) {
       canvas.drawCircle(Offset(cx, cy), 3, paint);
