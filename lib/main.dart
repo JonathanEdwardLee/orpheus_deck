@@ -915,49 +915,128 @@ class CassettePainter extends CustomPainter {
 
     final RRect windowRect = RRect.fromRectAndRadius(
         Rect.fromLTWH(winX, winY, winW, winH), const Radius.circular(4));
-    canvas.drawRRect(windowRect, paint);
 
-    double reelR = winH * 0.45;
-    double leftReelX = winX + winW * 0.15;
-    double rightReelX = winX + winW * 0.85;
-    double reelY = winY + winH / 2;
+    // Reel window visuals match [TapeReelTransport] / [_CassetteWindowPainter]
+    // (static tape-at-start: left pack large, right pack small).
+    final rect = windowRect.outerRect;
+    final midY = rect.center.dy;
+    final leftCx = rect.left + rect.width * 0.21;
+    final rightCx = rect.left + rect.width * 0.79;
+    const leftFill = 1.0;
+    const rightFill = 0.0;
 
-    canvas.drawLine(Offset(leftReelX, reelY + reelR),
-        Offset(rightReelX, reelY + reelR), paint);
-    canvas.drawLine(Offset(leftReelX, reelY - reelR),
-        Offset(rightReelX, reelY - reelR), paint);
+    final tapeMaxR = min(rect.height * 0.46, rect.width * 0.2);
+    final tapeMinR = tapeMaxR * 0.22;
+    final tapeLeftR = tapeMinR + (tapeMaxR - tapeMinR) * leftFill;
+    final tapeRightR = tapeMinR + (tapeMaxR - tapeMinR) * rightFill;
 
-    void drawReel(double cx, double cy, double radius, double rotation) {
-      canvas.drawCircle(Offset(cx, cy), radius, paint);
-      canvas.drawCircle(Offset(cx, cy), radius * 0.3, paint);
+    final hubR = tapeMaxR * 0.14;
+    final spokeInner = hubR * 1.15;
+    final spokeOuter = tapeMaxR * 0.34;
 
-      canvas.save();
-      canvas.translate(cx, cy);
-      canvas.rotate(rotation);
-      for (int i = 0; i < 3; i++) {
-        canvas.rotate(2 * pi / 3);
-        canvas.drawLine(Offset(0, radius * 0.3), Offset(0, radius), paint);
+    canvas.save();
+    canvas.clipRRect(windowRect);
+
+    canvas.drawRRect(
+      windowRect,
+      Paint()
+        ..color = Colors.black
+        ..style = PaintingStyle.fill,
+    );
+
+    final tapeFill = Paint()
+      ..color = Colors.white.withValues(alpha: 0.14)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(Offset(leftCx, midY), tapeLeftR, tapeFill);
+    canvas.drawCircle(Offset(rightCx, midY), tapeRightR, tapeFill);
+
+    final lip = Paint()
+      ..color = Colors.white.withValues(alpha: 0.2)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    canvas.drawCircle(Offset(leftCx, midY), tapeLeftR, lip);
+    canvas.drawCircle(Offset(rightCx, midY), tapeRightR, lip);
+
+    final yLow = midY + min(tapeLeftR, tapeRightR) * 0.72;
+    final yHigh = midY - min(tapeLeftR, tapeRightR) * 0.72;
+    final leftEdgeX = leftCx + tapeLeftR;
+    final rightEdgeX = rightCx - tapeRightR;
+    if (rightEdgeX > leftEdgeX + 4) {
+      final pathPaint = Paint()
+        ..color = Colors.white.withValues(alpha: 0.12)
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.square;
+      canvas.drawLine(
+          Offset(leftEdgeX, yHigh), Offset(rightEdgeX, yHigh), pathPaint);
+      canvas.drawLine(
+          Offset(leftEdgeX, yLow), Offset(rightEdgeX, yLow), pathPaint);
+      final pathFlow = spinProgress;
+      if (pathFlow > 0) {
+        const dash = 4.0;
+        final off = pathFlow * dash * 2;
+        final thin = Paint()
+          ..color = Colors.white.withValues(alpha: 0.09)
+          ..strokeWidth = 1;
+        double x = leftEdgeX - off % (dash * 2);
+        while (x < rightEdgeX) {
+          canvas.drawLine(
+              Offset(x, yHigh - 1), Offset(x + dash, yHigh - 1), thin);
+          x += dash * 2;
+        }
       }
-      canvas.restore();
     }
 
-    canvas.drawCircle(
-        Offset(leftReelX, reelY),
-        winH * 0.8,
-        Paint()
-          ..color = Colors.white24
-          ..style = PaintingStyle.fill);
-    canvas.drawCircle(
-        Offset(rightReelX, reelY),
-        winH * 0.5,
-        Paint()
-          ..color = Colors.white24
-          ..style = PaintingStyle.fill);
+    final base = spinProgress * 2 * pi;
+    final rotL =
+        base * (0.52 + 0.48 * (0.35 + 0.65 * (1.0 - leftFill)));
+    final rotR =
+        base * (0.52 + 0.48 * (0.35 + 0.65 * (1.0 - rightFill)));
 
-    double rotL = spinProgress * 2 * pi;
-    double rotR = spinProgress * 3 * pi;
-    drawReel(leftReelX, reelY, reelR, rotL);
-    drawReel(rightReelX, reelY, reelR, rotR);
+    void drawHub(double cx, double cy, double rot) {
+      canvas.save();
+      canvas.translate(cx, cy);
+      canvas.rotate(rot);
+      final sp = Paint()
+        ..color = Colors.white.withValues(alpha: 0.55)
+        ..strokeWidth = 1.2
+        ..strokeCap = StrokeCap.square;
+      for (int k = 0; k < 3; k++) {
+        final a = k * 2 * pi / 3;
+        final p1 = Offset(cos(a), sin(a)) * spokeInner;
+        final p2 = Offset(cos(a), sin(a)) * spokeOuter;
+        canvas.drawLine(p1, p2, sp);
+      }
+      canvas.restore();
+
+      canvas.drawCircle(
+        Offset(cx, cy),
+        hubR,
+        Paint()
+          ..color = Colors.black
+          ..style = PaintingStyle.fill,
+      );
+      canvas.drawCircle(
+        Offset(cx, cy),
+        hubR,
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.75)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1,
+      );
+    }
+
+    drawHub(leftCx, midY, rotL);
+    drawHub(rightCx, midY, rotR);
+
+    canvas.restore();
+
+    canvas.drawRRect(
+      windowRect,
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.38)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
 
     void drawScrew(double cx, double cy) {
       canvas.drawCircle(Offset(cx, cy), 3, paint);
@@ -1060,7 +1139,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
   bool _isPlaying = false;
   bool _isRecording = false;
   bool _isExporting = false;
-  int _recordDuration = 0;
   int? _exportSessionId;
 
   Timer? _tickerTimer;
@@ -1200,6 +1278,21 @@ class _RecorderScreenState extends State<RecorderScreen> {
   /// Always the physical tape side — never the longest recorded clip.
   int _tapeTransportMaxMs() => tapeLengthMs;
 
+  /// Updates [_playbackMs] and [_playbackProgress] without [setState].
+  /// Use inside existing [setState] blocks, or call [_setTapeHeadMs] from UI.
+  void _applyTapeHeadClamped(int ms) {
+    final int maxMs = _tapeTransportMaxMs();
+    _playbackMs = ms.clamp(0, maxMs);
+    _playbackProgress = maxMs > 0 ? _playbackMs / maxMs : 0.0;
+    if (_playbackProgress > 1.0) _playbackProgress = 1.0;
+  }
+
+  /// Single entry point for moving the tape head (transport clock + reel + dial).
+  void _setTapeHeadMs(int ms) {
+    if (!mounted) return;
+    setState(() => _applyTapeHeadClamped(ms));
+  }
+
   /// Longest clip on the deck (ms), for diagnostics only — not the tape clock cap.
   int _getMaxPlaybackDuration() {
     int maxMs = 0;
@@ -1222,10 +1315,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
   void _onTapeHeadSeekFromReel(int ms) {
     if (_isPlaying || _isRecording || _isExporting) return;
-    setState(() {
-      _playbackMs = ms.clamp(0, tapeLengthMs);
-      _playbackProgress = tapeLengthMs > 0 ? _playbackMs / tapeLengthMs : 0.0;
-    });
+    _setTapeHeadMs(ms);
     debugPrint(
       'Orpheus Deck: TAPE_HEAD_SEEK playbackMs=$_playbackMs tapeLengthMs=$tapeLengthMs',
     );
@@ -1487,9 +1577,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _waveformCache.clear();
     _exports.clear();
     _headphonesConfirmed = false;
-    _recordDuration = 0;
-    _playbackProgress = 0.0;
-    _playbackMs = 0;
+    _applyTapeHeadClamped(0);
     _lastUndo.clear();
     _clickPlayerSourcePath = null;
 
@@ -2226,10 +2314,28 @@ class _RecorderScreenState extends State<RecorderScreen> {
             shape: Border.all(color: Colors.white, width: 2),
             title: const Text("EXPORT COMPLETE",
                 style: TextStyle(color: Colors.white, fontFamily: 'monospace')),
-            content: SelectableText(
-              body,
-              style: const TextStyle(
-                  color: Colors.white54, fontFamily: 'monospace', fontSize: 10),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SelectableText(
+                  body,
+                  style: const TextStyle(
+                      color: Colors.white54,
+                      fontFamily: 'monospace',
+                      fontSize: 10),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'EXPORT USES CURRENT MIXER STATE',
+                  style: TextStyle(
+                    color: Colors.white38,
+                    fontFamily: 'monospace',
+                    fontSize: 9,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
             ),
             actions: [
               TextButton(
@@ -2771,24 +2877,16 @@ class _RecorderScreenState extends State<RecorderScreen> {
         final int nextMs = _playbackMs + 50;
         if (nextMs >= maxMs) {
           setState(() {
-            _playbackMs = maxMs;
-            _playbackProgress = 1.0;
+            _applyTapeHeadClamped(maxMs);
           });
           scheduleMicrotask(() async {
             await _stop(transportStopReason: 'TAPE_END');
           });
         } else {
           setState(() {
-            _playbackMs = nextMs;
-            _playbackProgress = _playbackMs / maxMs;
-            if (_playbackProgress > 1.0) _playbackProgress = 1.0;
+            _applyTapeHeadClamped(nextMs);
           });
         }
-      }
-      if (t.tick % 20 == 0) {
-        setState(() {
-          _recordDuration++;
-        });
       }
       if (t.tick % 20 == 0 && _isPlaying && _metronomeOn) {
         unawaited(_resyncClickPlayerToTransport());
@@ -2829,10 +2927,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
       setState(() {
         _isPlaying = true;
-        _recordDuration = 0;
-        _playbackMs = startMs;
-        _playbackProgress =
-            tapeLengthMs > 0 ? startMs / tapeLengthMs : 0.0;
+        _applyTapeHeadClamped(startMs);
       });
 
       // Stop all just_audio track players; seek to tape head after sources load.
@@ -3200,9 +3295,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
       setState(() {
         _isRecording = true;
         _isPlaying = true;
-        _recordDuration = 0;
-        _playbackMs = 0;
-        _playbackProgress = 0.0;
+        _applyTapeHeadClamped(0);
       });
       debugPrint(
         'Orpheus Deck: RECORD_TRANSPORT_START '
@@ -3216,6 +3309,18 @@ class _RecorderScreenState extends State<RecorderScreen> {
   Future<void> _stop({String transportStopReason = 'USER_STOP'}) async {
     if (_isExporting && _exportSessionId != null) {
       FFmpegKit.cancel(_exportSessionId);
+      return;
+    }
+
+    // Cassette: second STOP while already idle rewinds tape to 0:00.
+    if (!_isRecording && !_isPlaying) {
+      debugPrint(
+        'Orpheus Deck: TRANSPORT_STOP_IDLE_REWIND '
+        'reason=$transportStopReason '
+        'tapeLengthMs=$tapeLengthMs playbackMs=$_playbackMs -> 0',
+      );
+      _setTapeHeadMs(0);
+      await _stopClickPlayback();
       return;
     }
 
@@ -3283,12 +3388,13 @@ class _RecorderScreenState extends State<RecorderScreen> {
   }
 
   void _resetTimer() {
-    setState(() {
-      _stop();
-      _recordDuration = 0;
-      _playbackProgress = 0.0;
-      _playbackMs = 0;
-    });
+    unawaited(_resetTimerAfterStop());
+  }
+
+  Future<void> _resetTimerAfterStop() async {
+    await _stop(transportStopReason: 'LONG_PRESS_RESET');
+    if (!mounted) return;
+    _setTapeHeadMs(0);
     _showSnackbar('TIMER RESET');
   }
 
@@ -3380,7 +3486,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
             children: [
               DeckHeader(
                 statusLabel: _deckStatus,
-                duration: _recordDuration,
+                playbackMs: _playbackMs,
                 projectName: _projectName,
                 onProjectTap: _showProjectMenu,
                 hasUndo: _lastUndo.hasUndo,
@@ -3453,14 +3559,14 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
   Future<void> _initAudioSession() async {
     final session = await as_sess.AudioSession.instance;
-    final cfg = as_sess.AudioSessionConfiguration(
+    const cfg = as_sess.AudioSessionConfiguration(
       avAudioSessionCategory: as_sess.AVAudioSessionCategory.playAndRecord,
       avAudioSessionCategoryOptions:
           as_sess.AVAudioSessionCategoryOptions.defaultToSpeaker,
       avAudioSessionMode: as_sess.AVAudioSessionMode.defaultMode,
       avAudioSessionRouteSharingPolicy:
           as_sess.AVAudioSessionRouteSharingPolicy.defaultPolicy,
-      androidAudioAttributes: const as_sess.AndroidAudioAttributes(
+      androidAudioAttributes: as_sess.AndroidAudioAttributes(
         contentType: as_sess.AndroidAudioContentType.music,
         flags: as_sess.AndroidAudioFlags.none,
         usage: as_sess.AndroidAudioUsage.media,
@@ -3573,7 +3679,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
 class DeckHeader extends StatelessWidget {
   final String statusLabel;
-  final int duration;
+  /// Tape transport position (ms) — same clock as reel and dial.
+  final int playbackMs;
   final String projectName;
   final VoidCallback onProjectTap;
   final bool hasUndo;
@@ -3582,7 +3689,7 @@ class DeckHeader extends StatelessWidget {
   const DeckHeader({
     super.key,
     required this.statusLabel,
-    required this.duration,
+    required this.playbackMs,
     required this.projectName,
     required this.onProjectTap,
     this.hasUndo = false,
@@ -3590,9 +3697,10 @@ class DeckHeader extends StatelessWidget {
   });
 
   String get _formattedTime {
-    final m = (duration ~/ 60).toString().padLeft(2, '0');
-    final s = (duration % 60).toString().padLeft(2, '0');
-    return "$m:$s";
+    final int totalSec = playbackMs ~/ 1000;
+    final m = (totalSec ~/ 60).toString().padLeft(2, '0');
+    final s = (totalSec % 60).toString().padLeft(2, '0');
+    return '$m:$s';
   }
 
   @override
@@ -3607,79 +3715,87 @@ class DeckHeader extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                "ORPHEUS DECK",
-                style: TextStyle(
-                  color: Colors.white,
-                  fontFamily: 'monospace',
-                  fontWeight: FontWeight.bold,
-                  fontSize: 20,
-                  letterSpacing: 2,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  GestureDetector(
-                    onTap: onProjectTap,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 4, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.white24,
-                        border: Border.all(color: Colors.white54, width: 1),
-                      ),
-                      child: Text(
-                        "PROJECT: $projectName",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontFamily: 'monospace',
-                          fontWeight: FontWeight.bold,
-                          fontSize: 10,
-                          letterSpacing: 1,
-                        ),
-                      ),
-                    ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  "ORPHEUS DECK",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.bold,
+                    fontSize: 20,
+                    letterSpacing: 2,
                   ),
-                  if (hasUndo) ...[
-                    const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: onUndo,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 4, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.black,
-                          border: Border.all(color: Colors.white, width: 1),
-                        ),
-                        child: const Text(
-                          "UNDO",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontFamily: 'monospace',
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: onProjectTap,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.white24,
+                            border:
+                                Border.all(color: Colors.white54, width: 1),
+                          ),
+                          child: Text(
+                            "PROJECT: $projectName",
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            softWrap: false,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontFamily: 'monospace',
+                              fontWeight: FontWeight.bold,
+                              fontSize: 10,
+                              letterSpacing: 1,
+                            ),
                           ),
                         ),
                       ),
                     ),
+                    if (hasUndo) ...[
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onTap: onUndo,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.black,
+                            border: Border.all(color: Colors.white, width: 1),
+                          ),
+                          child: const Text(
+                            "UNDO",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontFamily: 'monospace',
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
-                ],
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                "FOUR-TRACK RECORDER // MK-I",
-                style: TextStyle(
-                  color: Colors.white54,
-                  fontFamily: 'monospace',
-                  fontSize: 8,
-                  letterSpacing: 1,
                 ),
-              ),
-            ],
+                const SizedBox(height: 4),
+                const Text(
+                  "FOUR-TRACK RECORDER // MK-I",
+                  style: TextStyle(
+                    color: Colors.white54,
+                    fontFamily: 'monospace',
+                    fontSize: 8,
+                    letterSpacing: 1,
+                  ),
+                ),
+              ],
+            ),
           ),
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
