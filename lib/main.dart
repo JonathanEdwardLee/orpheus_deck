@@ -1060,7 +1060,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
   bool _isPlaying = false;
   bool _isRecording = false;
   bool _isExporting = false;
-  int _recordDuration = 0;
   int? _exportSessionId;
 
   Timer? _tickerTimer;
@@ -1200,6 +1199,21 @@ class _RecorderScreenState extends State<RecorderScreen> {
   /// Always the physical tape side — never the longest recorded clip.
   int _tapeTransportMaxMs() => tapeLengthMs;
 
+  /// Updates [_playbackMs] and [_playbackProgress] without [setState].
+  /// Use inside existing [setState] blocks, or call [_setTapeHeadMs] from UI.
+  void _applyTapeHeadClamped(int ms) {
+    final int maxMs = _tapeTransportMaxMs();
+    _playbackMs = ms.clamp(0, maxMs);
+    _playbackProgress = maxMs > 0 ? _playbackMs / maxMs : 0.0;
+    if (_playbackProgress > 1.0) _playbackProgress = 1.0;
+  }
+
+  /// Single entry point for moving the tape head (transport clock + reel + dial).
+  void _setTapeHeadMs(int ms) {
+    if (!mounted) return;
+    setState(() => _applyTapeHeadClamped(ms));
+  }
+
   /// Longest clip on the deck (ms), for diagnostics only — not the tape clock cap.
   int _getMaxPlaybackDuration() {
     int maxMs = 0;
@@ -1222,10 +1236,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
   void _onTapeHeadSeekFromReel(int ms) {
     if (_isPlaying || _isRecording || _isExporting) return;
-    setState(() {
-      _playbackMs = ms.clamp(0, tapeLengthMs);
-      _playbackProgress = tapeLengthMs > 0 ? _playbackMs / tapeLengthMs : 0.0;
-    });
+    _setTapeHeadMs(ms);
     debugPrint(
       'Orpheus Deck: TAPE_HEAD_SEEK playbackMs=$_playbackMs tapeLengthMs=$tapeLengthMs',
     );
@@ -1487,9 +1498,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _waveformCache.clear();
     _exports.clear();
     _headphonesConfirmed = false;
-    _recordDuration = 0;
-    _playbackProgress = 0.0;
-    _playbackMs = 0;
+    _applyTapeHeadClamped(0);
     _lastUndo.clear();
     _clickPlayerSourcePath = null;
 
@@ -2771,24 +2780,16 @@ class _RecorderScreenState extends State<RecorderScreen> {
         final int nextMs = _playbackMs + 50;
         if (nextMs >= maxMs) {
           setState(() {
-            _playbackMs = maxMs;
-            _playbackProgress = 1.0;
+            _applyTapeHeadClamped(maxMs);
           });
           scheduleMicrotask(() async {
             await _stop(transportStopReason: 'TAPE_END');
           });
         } else {
           setState(() {
-            _playbackMs = nextMs;
-            _playbackProgress = _playbackMs / maxMs;
-            if (_playbackProgress > 1.0) _playbackProgress = 1.0;
+            _applyTapeHeadClamped(nextMs);
           });
         }
-      }
-      if (t.tick % 20 == 0) {
-        setState(() {
-          _recordDuration++;
-        });
       }
       if (t.tick % 20 == 0 && _isPlaying && _metronomeOn) {
         unawaited(_resyncClickPlayerToTransport());
@@ -2829,10 +2830,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
       setState(() {
         _isPlaying = true;
-        _recordDuration = 0;
-        _playbackMs = startMs;
-        _playbackProgress =
-            tapeLengthMs > 0 ? startMs / tapeLengthMs : 0.0;
+        _applyTapeHeadClamped(startMs);
       });
 
       // Stop all just_audio track players; seek to tape head after sources load.
@@ -3200,9 +3198,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
       setState(() {
         _isRecording = true;
         _isPlaying = true;
-        _recordDuration = 0;
-        _playbackMs = 0;
-        _playbackProgress = 0.0;
+        _applyTapeHeadClamped(0);
       });
       debugPrint(
         'Orpheus Deck: RECORD_TRANSPORT_START '
@@ -3216,6 +3212,18 @@ class _RecorderScreenState extends State<RecorderScreen> {
   Future<void> _stop({String transportStopReason = 'USER_STOP'}) async {
     if (_isExporting && _exportSessionId != null) {
       FFmpegKit.cancel(_exportSessionId);
+      return;
+    }
+
+    // Cassette: second STOP while already idle rewinds tape to 0:00.
+    if (!_isRecording && !_isPlaying) {
+      debugPrint(
+        'Orpheus Deck: TRANSPORT_STOP_IDLE_REWIND '
+        'reason=$transportStopReason '
+        'tapeLengthMs=$tapeLengthMs playbackMs=$_playbackMs -> 0',
+      );
+      _setTapeHeadMs(0);
+      await _stopClickPlayback();
       return;
     }
 
@@ -3283,12 +3291,13 @@ class _RecorderScreenState extends State<RecorderScreen> {
   }
 
   void _resetTimer() {
-    setState(() {
-      _stop();
-      _recordDuration = 0;
-      _playbackProgress = 0.0;
-      _playbackMs = 0;
-    });
+    unawaited(_resetTimerAfterStop());
+  }
+
+  Future<void> _resetTimerAfterStop() async {
+    await _stop(transportStopReason: 'LONG_PRESS_RESET');
+    if (!mounted) return;
+    _setTapeHeadMs(0);
     _showSnackbar('TIMER RESET');
   }
 
@@ -3380,7 +3389,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
             children: [
               DeckHeader(
                 statusLabel: _deckStatus,
-                duration: _recordDuration,
+                playbackMs: _playbackMs,
                 projectName: _projectName,
                 onProjectTap: _showProjectMenu,
                 hasUndo: _lastUndo.hasUndo,
@@ -3453,14 +3462,14 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
   Future<void> _initAudioSession() async {
     final session = await as_sess.AudioSession.instance;
-    final cfg = as_sess.AudioSessionConfiguration(
+    const cfg = as_sess.AudioSessionConfiguration(
       avAudioSessionCategory: as_sess.AVAudioSessionCategory.playAndRecord,
       avAudioSessionCategoryOptions:
           as_sess.AVAudioSessionCategoryOptions.defaultToSpeaker,
       avAudioSessionMode: as_sess.AVAudioSessionMode.defaultMode,
       avAudioSessionRouteSharingPolicy:
           as_sess.AVAudioSessionRouteSharingPolicy.defaultPolicy,
-      androidAudioAttributes: const as_sess.AndroidAudioAttributes(
+      androidAudioAttributes: as_sess.AndroidAudioAttributes(
         contentType: as_sess.AndroidAudioContentType.music,
         flags: as_sess.AndroidAudioFlags.none,
         usage: as_sess.AndroidAudioUsage.media,
@@ -3573,7 +3582,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
 class DeckHeader extends StatelessWidget {
   final String statusLabel;
-  final int duration;
+  /// Tape transport position (ms) — same clock as reel and dial.
+  final int playbackMs;
   final String projectName;
   final VoidCallback onProjectTap;
   final bool hasUndo;
@@ -3582,7 +3592,7 @@ class DeckHeader extends StatelessWidget {
   const DeckHeader({
     super.key,
     required this.statusLabel,
-    required this.duration,
+    required this.playbackMs,
     required this.projectName,
     required this.onProjectTap,
     this.hasUndo = false,
@@ -3590,9 +3600,10 @@ class DeckHeader extends StatelessWidget {
   });
 
   String get _formattedTime {
-    final m = (duration ~/ 60).toString().padLeft(2, '0');
-    final s = (duration % 60).toString().padLeft(2, '0');
-    return "$m:$s";
+    final int totalSec = playbackMs ~/ 1000;
+    final m = (totalSec ~/ 60).toString().padLeft(2, '0');
+    final s = (totalSec % 60).toString().padLeft(2, '0');
+    return '$m:$s';
   }
 
   @override
