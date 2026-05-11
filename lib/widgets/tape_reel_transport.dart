@@ -2,7 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-/// Cassette-style tape position: reels + ruler + head. Not a DAW timeline.
+/// Two-part transport: **tape position window** (tuner / locator) +
+/// **cassette reel window** (emotional mechanism). Not a DAW timeline.
 class TapeReelTransport extends StatefulWidget {
   const TapeReelTransport({
     super.key,
@@ -28,7 +29,6 @@ class TapeReelTransport extends StatefulWidget {
 class _TapeReelTransportState extends State<TapeReelTransport>
     with TickerProviderStateMixin {
   late final AnimationController _spin;
-  /// Optional subtle spin-up / coast (multiplier 0→1). Not transport logic.
   late final AnimationController _spinRamp;
 
   bool get _spinning => widget.isPlaying || widget.isRecording;
@@ -81,7 +81,6 @@ class _TapeReelTransportState extends State<TapeReelTransport>
     return (widget.playbackMs / widget.tapeLengthMs).clamp(0.0, 1.0);
   }
 
-  /// Subtle spin-up after transport starts (illusion only).
   double get _spinMul =>
       0.2 + 0.8 * Curves.easeOutCubic.transform(_spinRamp.value);
 
@@ -95,107 +94,95 @@ class _TapeReelTransportState extends State<TapeReelTransport>
 
   @override
   Widget build(BuildContext context) {
-    const double reelSlot = 76;
-    const double stripHeight = 46;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _TapePositionPanel(
+          progress: _progress,
+          tapeLengthMs: widget.tapeLengthMs,
+          seekEnabled: widget.seekEnabled && !_spinning,
+          transportActive: _spinning,
+          onSeekDx: _seekFromLocalDx,
+        ),
+        const SizedBox(height: 10),
+        _CassetteMechanismPanel(
+          progress: _progress,
+          spinning: _spinning,
+          spinAnimation: _spin,
+          spinMul: _spinMul,
+        ),
+      ],
+    );
+  }
+}
+
+// --- TOP: tape locator (separate from reels; radio-deck / tuner feel) ---
+
+class _TapePositionPanel extends StatelessWidget {
+  const _TapePositionPanel({
+    required this.progress,
+    required this.tapeLengthMs,
+    required this.seekEnabled,
+    required this.transportActive,
+    required this.onSeekDx,
+  });
+
+  final double progress;
+  final int tapeLengthMs;
+  final bool seekEnabled;
+  final bool transportActive;
+  final void Function(double dx, double width) onSeekDx;
+
+  @override
+  Widget build(BuildContext context) {
+    const trackH = 28.0;
+    const labelH = 12.0;
 
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
       decoration: BoxDecoration(
         color: Colors.black,
-        border: Border.all(color: Colors.white38, width: 1),
+        border: Border.all(
+          color: transportActive
+              ? Colors.white.withValues(alpha: 0.42)
+              : Colors.white.withValues(alpha: 0.22),
+          width: 1,
+        ),
+        borderRadius: BorderRadius.circular(2),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
           SizedBox(
-            width: reelSlot,
-            height: reelSlot,
-            child: AnimatedBuilder(
-              animation: Listenable.merge([_spin, _spinRamp]),
-              builder: (context, _) {
-                final rot = _spin.value *
-                    2 *
-                    math.pi *
-                    (_spinning ? _spinMul : 1.0);
-                return CustomPaint(
-                  painter: _ReelPainter(
-                    rotation: rot,
-                    tapeProgress: _progress,
-                    isLeft: true,
+            height: trackH,
+            child: LayoutBuilder(
+              builder: (context, c) {
+                final w = c.maxWidth;
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: seekEnabled
+                      ? (e) => onSeekDx(e.localPosition.dx, w)
+                      : null,
+                  onHorizontalDragUpdate: seekEnabled
+                      ? (d) => onSeekDx(d.localPosition.dx, w)
+                      : null,
+                  child: CustomPaint(
+                    size: Size(w, trackH),
+                    painter: _TapeLocatorTrackPainter(
+                      progress: progress,
+                      transportActive: transportActive,
+                    ),
                   ),
                 );
               },
-            ),
-          ),
-          Expanded(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SizedBox(
-                  height: stripHeight,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final w = constraints.maxWidth;
-                      final seekHere = widget.seekEnabled &&
-                          !_spinning &&
-                          w > 0;
-                      final flowPhase = _spinning
-                          ? (widget.playbackMs % 1200) / 1200.0
-                          : 0.0;
-                      return GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTapDown: seekHere
-                            ? (e) => _seekFromLocalDx(
-                                  e.localPosition.dx,
-                                  w,
-                                )
-                            : null,
-                        onHorizontalDragUpdate: seekHere
-                            ? (d) => _seekFromLocalDx(
-                                  d.localPosition.dx,
-                                  w,
-                                )
-                            : null,
-                        child: CustomPaint(
-                          size: Size(w, stripHeight),
-                          painter: _TapeStripPainter(
-                            progress: _progress,
-                            tapeFlowActive: _spinning,
-                            flowPhase: flowPhase,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(
-                  height: 11,
-                  child: CustomPaint(
-                    painter: _TapeRulerLabelsPainter(),
-                    child: SizedBox.expand(),
-                  ),
-                ),
-              ],
             ),
           ),
           SizedBox(
-            width: reelSlot,
-            height: reelSlot,
-            child: AnimatedBuilder(
-              animation: Listenable.merge([_spin, _spinRamp]),
-              builder: (context, _) {
-                final rot = _spin.value *
-                    2 *
-                    math.pi *
-                    (_spinning ? _spinMul : 1.0);
-                return CustomPaint(
-                  painter: _ReelPainter(
-                    rotation: rot,
-                    tapeProgress: _progress,
-                    isLeft: false,
-                  ),
-                );
-              },
+            height: labelH,
+            child: CustomPaint(
+              painter: _TapeLocatorLabelsPainter(),
+              child: const SizedBox.expand(),
             ),
           ),
         ],
@@ -204,186 +191,81 @@ class _TapeReelTransportState extends State<TapeReelTransport>
   }
 }
 
-/// Fixed-size reel hardware + rotating spokes + tape mass radius only.
-///
-/// **Tape mass:** [tapeProgress] 0 = start of side, 1 = end.
-/// - Left supply reel: mass full at 0, thin at 1 → fill = `1 - tapeProgress`.
-/// - Right take-up reel: mass thin at 0, full at 1 → fill = `tapeProgress`.
-/// Outer flange radius is constant; only the wound-tape outer radius lerps.
-class _ReelPainter extends CustomPainter {
-  _ReelPainter({
-    required this.rotation,
-    required this.tapeProgress,
-    required this.isLeft,
-  });
-
-  final double rotation;
-  final double tapeProgress;
-  final bool isLeft;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final c = Offset(size.width / 2, size.height / 2);
-    final hardwareR = math.min(size.width, size.height) / 2 - 1.5;
-    const hubR = 5.5;
-    const hubRing = 1.2;
-    final t = tapeProgress.clamp(0.0, 1.0);
-    final fill = isLeft ? (1.0 - t) : t;
-
-    const tapeOuterMin = hubR + hubRing + 3.0;
-    final tapeOuterMax = hardwareR - 4.0;
-    final tapeOuter = _lerpDouble(tapeOuterMin, tapeOuterMax, fill)
-        .clamp(tapeOuterMin, tapeOuterMax);
-
-    // 1) Tape mass (annulus hub+clearance .. tapeOuter)
-    final tapePaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.2)
-      ..style = PaintingStyle.fill;
-    final outerTape = Path()
-      ..addOval(Rect.fromCircle(center: c, radius: tapeOuter));
-    final hubHole = Path()
-      ..addOval(Rect.fromCircle(center: c, radius: hubR + hubRing));
-    final tapeRing = Path.combine(
-      PathOperation.difference,
-      outerTape,
-      hubHole,
-    );
-    canvas.drawPath(tapeRing, tapePaint);
-
-    // 2) Spokes — fixed geometry, rotate only
-    canvas.save();
-    canvas.translate(c.dx, c.dy);
-    canvas.rotate(rotation);
-    const spokeInner = hubR + hubRing + 1.0;
-    final spokeOuter = hardwareR - 3.5;
-    final spokePaint = Paint()
-      ..color = Colors.white60
-      ..strokeWidth = 2
-      ..strokeCap = StrokeCap.square;
-    for (int k = 0; k < 3; k++) {
-      final a = k * 2 * math.pi / 3;
-      final p1 = Offset(math.cos(a), math.sin(a)) * spokeInner;
-      final p2 = Offset(math.cos(a), math.sin(a)) * spokeOuter;
-      canvas.drawLine(p1, p2, spokePaint);
-    }
-    canvas.restore();
-
-    // 3) Center hub (fixed)
-    canvas.drawCircle(
-      c,
-      hubR,
-      Paint()
-        ..color = Colors.black
-        ..style = PaintingStyle.fill,
-    );
-    canvas.drawCircle(
-      c,
-      hubR,
-      Paint()
-        ..color = Colors.white
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5,
-    );
-
-    // 4) Outer reel hardware — fixed radius
-    canvas.drawCircle(
-      c,
-      hardwareR,
-      Paint()
-        ..color = Colors.white
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _ReelPainter old) {
-    return old.rotation != rotation ||
-        old.tapeProgress != tapeProgress ||
-        old.isLeft != isLeft;
-  }
-}
-
-class _TapeStripPainter extends CustomPainter {
-  _TapeStripPainter({
+class _TapeLocatorTrackPainter extends CustomPainter {
+  _TapeLocatorTrackPainter({
     required this.progress,
-    required this.tapeFlowActive,
-    required this.flowPhase,
+    required this.transportActive,
   });
 
   final double progress;
-  final bool tapeFlowActive;
-  final double flowPhase;
+  final bool transportActive;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final yMid = size.height * 0.52;
     final w = size.width;
+    final y = size.height * 0.55;
     final p = progress.clamp(0.0, 1.0);
-    final rawX = p * w;
-    final headX = w <= 10 ? w * 0.5 : rawX.clamp(4.0, w - 4.0);
+    final headX = w <= 12 ? w * 0.5 : (p * w).clamp(6.0, w - 6.0);
 
-    // Tape ribbon (subtle directional shimmer when moving)
-    final linePaint = Paint()
-      ..color = Colors.white38
-      ..strokeWidth = 1;
-    if (tapeFlowActive && w > 8) {
-      const dash = 5.0;
-      final offset = flowPhase * dash * 2;
-      double x = -offset;
-      while (x < w) {
-        canvas.drawLine(Offset(x, yMid), Offset(x + dash, yMid), linePaint);
-        x += dash * 2;
-      }
-    } else {
-      canvas.drawLine(Offset(0, yMid), Offset(w, yMid), linePaint);
-    }
+    // Inner channel (tuner window)
+    final chTop = y - 5;
+    final chBot = y + 5;
+    canvas.drawRect(
+      Rect.fromLTWH(0, chTop, w, chBot - chTop),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.06)
+        ..style = PaintingStyle.fill,
+    );
 
-    // Minute ticks — secondary, soft
-    final tickPaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.18)
+    final baseStroke = Paint()
+      ..color = Colors.white.withValues(alpha: 0.28)
       ..strokeWidth = 1;
+    canvas.drawLine(Offset(0, y), Offset(w, y), baseStroke);
+
+    // Minute ticks: small every minute, larger every 5
     for (int m = 1; m < 15; m++) {
       final x = w * (m / 15.0);
-      final tall = m % 5 == 0;
-      final h = tall ? 5.0 : 2.5;
-      canvas.drawLine(Offset(x, yMid - h), Offset(x, yMid + h), tickPaint);
+      final major = m % 5 == 0;
+      final h = major ? 7.0 : 3.5;
+      canvas.drawLine(
+        Offset(x, y - h),
+        Offset(x, y + h),
+        Paint()
+          ..color = Colors.white.withValues(alpha: major ? 0.32 : 0.16)
+          ..strokeWidth = 1,
+      );
     }
 
-    // Mechanical tape-head marker: thin vertical + guide notch (not a scrub triangle)
-    const halfW = 1.0;
-    const vTop = 6.0;
-    const vBot = 20.0;
+    // Locator — slides with position; slightly brighter when transport runs
+    final locA = transportActive ? 0.95 : 0.78;
     canvas.drawRect(
-      Rect.fromLTRB(headX - halfW, vTop, headX + halfW, vBot),
-      Paint()..color = Colors.white.withValues(alpha: 0.9),
+      Rect.fromCenter(
+        center: Offset(headX, y),
+        width: 2,
+        height: 14,
+      ),
+      Paint()..color = Colors.white.withValues(alpha: locA),
     );
     canvas.drawLine(
-      Offset(headX - 5, yMid),
-      Offset(headX + 5, yMid),
+      Offset(headX - 4, y),
+      Offset(headX + 4, y),
       Paint()
-        ..color = Colors.white.withValues(alpha: 0.55)
+        ..color = Colors.white.withValues(alpha: locA * 0.55)
         ..strokeWidth = 1,
     );
   }
 
   @override
-  bool shouldRepaint(covariant _TapeStripPainter old) {
+  bool shouldRepaint(covariant _TapeLocatorTrackPainter old) {
     return old.progress != progress ||
-        old.tapeFlowActive != tapeFlowActive ||
-        old.flowPhase != flowPhase;
+        old.transportActive != transportActive;
   }
 }
 
-class _TapeRulerLabelsPainter extends CustomPainter {
-  const _TapeRulerLabelsPainter();
-
+class _TapeLocatorLabelsPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final tp = TextPainter(
-      textDirection: TextDirection.ltr,
-      textAlign: TextAlign.center,
-    );
+    final tp = TextPainter(textDirection: TextDirection.ltr);
     const labels = ['0', '5', '10', '15'];
     final w = size.width;
     for (int i = 0; i < labels.length; i++) {
@@ -391,9 +273,9 @@ class _TapeRulerLabelsPainter extends CustomPainter {
       tp.text = TextSpan(
         text: labels[i],
         style: TextStyle(
-          color: Colors.white.withValues(alpha: 0.22),
+          color: Colors.white.withValues(alpha: 0.2),
           fontFamily: 'monospace',
-          fontSize: 8,
+          fontSize: 9,
           height: 1,
         ),
       );
@@ -403,7 +285,220 @@ class _TapeRulerLabelsPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _TapeRulerLabelsPainter old) => false;
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+// --- BOTTOM: cassette window (tape dominates; small hubs; path between) ---
+
+class _CassetteMechanismPanel extends StatelessWidget {
+  const _CassetteMechanismPanel({
+    required this.progress,
+    required this.spinning,
+    required this.spinAnimation,
+    required this.spinMul,
+  });
+
+  final double progress;
+  final bool spinning;
+  final Animation<double> spinAnimation;
+  final double spinMul;
+
+  @override
+  Widget build(BuildContext context) {
+    const h = 102.0;
+    return Container(
+      height: h,
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black,
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.26),
+          width: 1,
+        ),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: AnimatedBuilder(
+        animation: spinAnimation,
+        builder: (context, _) {
+          final base = spinAnimation.value *
+              2 *
+              math.pi *
+              (spinning ? spinMul : 1.0);
+          // Larger wound pack → slower rotation (cassette-ish cue).
+          final t = progress.clamp(0.0, 1.0);
+          final leftFill = 1.0 - t;
+          final rightFill = t;
+          // More wound tape → slower hub (inverse of pack size).
+          final rotL =
+              base * (0.52 + 0.48 * (0.35 + 0.65 * (1.0 - leftFill)));
+          final rotR =
+              base * (0.52 + 0.48 * (0.35 + 0.65 * (1.0 - rightFill)));
+          final flow = spinning ? spinAnimation.value : 0.0;
+          return CustomPaint(
+            painter: _CassetteWindowPainter(
+              progress: progress,
+              rotationLeft: rotL,
+              rotationRight: rotR,
+              pathFlow: flow,
+            ),
+            child: const SizedBox.expand(),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Single “window” like menu [CassettePainter]: dark tape blobs dominate, small reels inside.
+class _CassetteWindowPainter extends CustomPainter {
+  _CassetteWindowPainter({
+    required this.progress,
+    required this.rotationLeft,
+    required this.rotationRight,
+    required this.pathFlow,
+  });
+
+  final double progress;
+  final double rotationLeft;
+  final double rotationRight;
+  final double pathFlow;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final t = progress.clamp(0.0, 1.0);
+    final leftFill = 1.0 - t;
+    final rightFill = t;
+
+    const inset = 8.0;
+    final shell = RRect.fromRectAndRadius(
+      Rect.fromLTWH(inset, 4, size.width - inset * 2, size.height - 12),
+      const Radius.circular(3),
+    );
+    canvas.drawRRect(
+      shell,
+      Paint()
+        ..color = Colors.black
+        ..style = PaintingStyle.fill,
+    );
+    canvas.drawRRect(
+      shell,
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.22)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+
+    final rect = shell.outerRect;
+    final midY = rect.center.dy;
+    final leftCx = rect.left + rect.width * 0.21;
+    final rightCx = rect.left + rect.width * 0.79;
+
+    // Max radius for tape mass (~ menu: winH * 0.8 style dominance)
+    final tapeMaxR = math.min(rect.height * 0.46, rect.width * 0.2);
+    final tapeMinR = tapeMaxR * 0.22;
+
+    final tapeLeftR = _lerpDouble(tapeMinR, tapeMaxR, leftFill);
+    final tapeRightR = _lerpDouble(tapeMinR, tapeMaxR, rightFill);
+
+    // Small fixed hub/spoke assembly (compact cassette)
+    final hubR = tapeMaxR * 0.14;
+    final spokeInner = hubR * 1.15;
+    final spokeOuter = tapeMaxR * 0.34;
+
+    // 1) Dark tape mass (dominant) — menu uses white24; slightly darker for OLED
+    final tapeFill = Paint()
+      ..color = Colors.white.withValues(alpha: 0.14)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(Offset(leftCx, midY), tapeLeftR, tapeFill);
+    canvas.drawCircle(Offset(rightCx, midY), tapeRightR, tapeFill);
+
+    // Subtle outer lip on tape pack
+    final lip = Paint()
+      ..color = Colors.white.withValues(alpha: 0.2)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    canvas.drawCircle(Offset(leftCx, midY), tapeLeftR, lip);
+    canvas.drawCircle(Offset(rightCx, midY), tapeRightR, lip);
+
+    // Tape path: upper/lower runs (menu cassette style), tangent to tape packs
+    final yLow = midY + math.min(tapeLeftR, tapeRightR) * 0.72;
+    final yHigh = midY - math.min(tapeLeftR, tapeRightR) * 0.72;
+    final leftEdgeX = leftCx + tapeLeftR;
+    final rightEdgeX = rightCx - tapeRightR;
+    if (rightEdgeX > leftEdgeX + 4) {
+      final pathPaint = Paint()
+        ..color = Colors.white.withValues(alpha: 0.12)
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.square;
+      canvas.drawLine(
+        Offset(leftEdgeX, yHigh),
+        Offset(rightEdgeX, yHigh),
+        pathPaint,
+      );
+      canvas.drawLine(
+        Offset(leftEdgeX, yLow),
+        Offset(rightEdgeX, yLow),
+        pathPaint,
+      );
+      if (pathFlow > 0) {
+        const dash = 4.0;
+        final off = pathFlow * dash * 2;
+        final thin = Paint()
+          ..color = Colors.white.withValues(alpha: 0.09)
+          ..strokeWidth = 1;
+        double x = leftEdgeX - off % (dash * 2);
+        while (x < rightEdgeX) {
+          canvas.drawLine(Offset(x, yHigh - 1), Offset(x + dash, yHigh - 1), thin);
+          x += dash * 2;
+        }
+      }
+    }
+
+    void drawHub(double cx, double cy, double rot) {
+      // Spokes only inside tape — short, delicate
+      canvas.save();
+      canvas.translate(cx, cy);
+      canvas.rotate(rot);
+      final sp = Paint()
+          ..color = Colors.white.withValues(alpha: 0.55)
+          ..strokeWidth = 1.2
+          ..strokeCap = StrokeCap.square;
+      for (int k = 0; k < 3; k++) {
+        final a = k * 2 * math.pi / 3;
+        final p1 = Offset(math.cos(a), math.sin(a)) * spokeInner;
+        final p2 = Offset(math.cos(a), math.sin(a)) * spokeOuter;
+        canvas.drawLine(p1, p2, sp);
+      }
+      canvas.restore();
+
+      canvas.drawCircle(
+        Offset(cx, cy),
+        hubR,
+        Paint()
+          ..color = Colors.black
+          ..style = PaintingStyle.fill,
+      );
+      canvas.drawCircle(
+        Offset(cx, cy),
+        hubR,
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.75)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1,
+      );
+    }
+
+    drawHub(leftCx, midY, rotationLeft);
+    drawHub(rightCx, midY, rotationRight);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CassetteWindowPainter old) {
+    return old.progress != progress ||
+        old.rotationLeft != rotationLeft ||
+        old.rotationRight != rotationRight ||
+        old.pathFlow != pathFlow;
+  }
 }
 
 double _lerpDouble(double a, double b, double t) => a + (b - a) * t;
