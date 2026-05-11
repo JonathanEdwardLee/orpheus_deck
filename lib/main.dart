@@ -3866,7 +3866,7 @@ class TrackStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     bool hasAudio = filePath != null;
-    String displayId = hasAudio
+    final String clipId = hasAudio
         ? filePath!.split(RegExp(r'[/\\]')).last.replaceAll('.m4a', '')
         : "";
 
@@ -3876,49 +3876,38 @@ class TrackStrip extends StatelessWidget {
         children: [
           Row(
             children: [
-              SizedBox(
-                width: 65,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      "TRK\n0$trackNumber",
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontFamily: 'monospace',
-                        fontWeight: FontWeight.bold,
-                        height: 1.2,
-                      ),
-                    ),
-                    if (hasAudio) ...[
-                      const SizedBox(height: 4),
-                      Container(
-                        color: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 2),
-                        child: const Text(
-                          "M4A",
-                          style: TextStyle(
-                            color: Colors.black,
-                            fontFamily: 'monospace',
-                            fontSize: 8,
-                            fontWeight: FontWeight.bold,
+              GestureDetector(
+                onLongPress: hasAudio && clipId.isNotEmpty
+                    ? () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            behavior: SnackBarBehavior.floating,
+                            content: Text(
+                              'CLIP: $clipId',
+                              style: const TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 12,
+                              ),
+                            ),
+                            duration: const Duration(seconds: 3),
                           ),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        displayId,
-                        style: const TextStyle(
-                          color: Colors.white54,
-                          fontFamily: 'monospace',
-                          fontSize: 8,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.clip,
-                      ),
-                    ],
-                  ],
+                        );
+                      }
+                    : null,
+                child: SizedBox(
+                  width: 65,
+                  child: Text(
+                    'TRK 0$trackNumber',
+                    maxLines: 1,
+                    overflow: TextOverflow.clip,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                      height: 1.0,
+                    ),
+                  ),
                 ),
               ),
               GestureDetector(
