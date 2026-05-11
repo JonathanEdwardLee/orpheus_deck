@@ -100,12 +100,11 @@ class _TapeReelTransportState extends State<TapeReelTransport>
       children: [
         _TapePositionPanel(
           progress: _progress,
-          tapeLengthMs: widget.tapeLengthMs,
           seekEnabled: widget.seekEnabled && !_spinning,
           transportActive: _spinning,
           onSeekDx: _seekFromLocalDx,
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 8),
         _CassetteMechanismPanel(
           progress: _progress,
           spinning: _spinning,
@@ -122,33 +121,26 @@ class _TapeReelTransportState extends State<TapeReelTransport>
 class _TapePositionPanel extends StatelessWidget {
   const _TapePositionPanel({
     required this.progress,
-    required this.tapeLengthMs,
     required this.seekEnabled,
     required this.transportActive,
     required this.onSeekDx,
   });
 
   final double progress;
-  final int tapeLengthMs;
   final bool seekEnabled;
   final bool transportActive;
   final void Function(double dx, double width) onSeekDx;
 
   @override
   Widget build(BuildContext context) {
-    const trackH = 28.0;
-    const labelH = 12.0;
+    const trackH = 24.0;
+    const labelH = 10.0;
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 5),
       decoration: BoxDecoration(
         color: Colors.black,
-        border: Border.all(
-          color: transportActive
-              ? Colors.white.withValues(alpha: 0.42)
-              : Colors.white.withValues(alpha: 0.22),
-          width: 1,
-        ),
+        border: Border.all(color: Colors.white, width: 2),
         borderRadius: BorderRadius.circular(2),
       ),
       child: Column(
@@ -213,12 +205,12 @@ class _TapeLocatorTrackPainter extends CustomPainter {
     canvas.drawRect(
       Rect.fromLTWH(0, chTop, w, chBot - chTop),
       Paint()
-        ..color = Colors.white.withValues(alpha: 0.06)
+        ..color = Colors.white.withValues(alpha: 0.08)
         ..style = PaintingStyle.fill,
     );
 
     final baseStroke = Paint()
-      ..color = Colors.white.withValues(alpha: 0.28)
+      ..color = Colors.white.withValues(alpha: 0.52)
       ..strokeWidth = 1;
     canvas.drawLine(Offset(0, y), Offset(w, y), baseStroke);
 
@@ -231,18 +223,18 @@ class _TapeLocatorTrackPainter extends CustomPainter {
         Offset(x, y - h),
         Offset(x, y + h),
         Paint()
-          ..color = Colors.white.withValues(alpha: major ? 0.32 : 0.16)
+          ..color = Colors.white.withValues(alpha: major ? 0.58 : 0.34)
           ..strokeWidth = 1,
       );
     }
 
-    // Locator — slides with position; slightly brighter when transport runs
-    final locA = transportActive ? 0.95 : 0.78;
+    // Locator — slides with position; full white when transport runs
+    final locA = transportActive ? 1.0 : 0.9;
     canvas.drawRect(
       Rect.fromCenter(
         center: Offset(headX, y),
         width: 2,
-        height: 14,
+        height: 12,
       ),
       Paint()..color = Colors.white.withValues(alpha: locA),
     );
@@ -250,7 +242,7 @@ class _TapeLocatorTrackPainter extends CustomPainter {
       Offset(headX - 4, y),
       Offset(headX + 4, y),
       Paint()
-        ..color = Colors.white.withValues(alpha: locA * 0.55)
+        ..color = Colors.white.withValues(alpha: locA * 0.72)
         ..strokeWidth = 1,
     );
   }
@@ -273,7 +265,7 @@ class _TapeLocatorLabelsPainter extends CustomPainter {
       tp.text = TextSpan(
         text: labels[i],
         style: TextStyle(
-          color: Colors.white.withValues(alpha: 0.2),
+          color: Colors.white.withValues(alpha: 0.4),
           fontFamily: 'monospace',
           fontSize: 9,
           height: 1,
@@ -305,16 +297,13 @@ class _CassetteMechanismPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const h = 102.0;
+    const h = 94.0;
     return Container(
       height: h,
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
       decoration: BoxDecoration(
         color: Colors.black,
-        border: Border.all(
-          color: Colors.white.withValues(alpha: 0.26),
-          width: 1,
-        ),
+        border: Border.all(color: Colors.white, width: 2),
         borderRadius: BorderRadius.circular(4),
       ),
       child: AnimatedBuilder(
@@ -383,7 +372,7 @@ class _CassetteWindowPainter extends CustomPainter {
     canvas.drawRRect(
       shell,
       Paint()
-        ..color = Colors.white.withValues(alpha: 0.22)
+        ..color = Colors.white.withValues(alpha: 0.38)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1,
     );
