@@ -293,6 +293,17 @@ List<ExportEntry> parseExportsFromJson(dynamic raw) {
   return out;
 }
 
+List<int> fourTrackIntsFromJson(dynamic raw, int fill) {
+  final list = List<int>.from(raw as List? ?? const <int>[]);
+  while (list.length < 4) {
+    list.add(fill);
+  }
+  if (list.length > 4) {
+    return list.sublist(0, 4);
+  }
+  return list;
+}
+
 class Session {
   String projectName;
   DateTime createdAt;
@@ -308,6 +319,10 @@ class Session {
   int bpm;
   bool metronomeOn;
   String metronomeSound;
+  /// One bar (4 beats) of CLICK-only pre-roll before the recorder starts.
+  bool clickOneBarCountIn;
+  /// Tape position (ms) when this track’s audio begins (post count-in).
+  List<int> trackRecordStartTapeMs;
 
   Session({
     required this.projectName,
@@ -324,6 +339,8 @@ class Session {
     required this.bpm,
     required this.metronomeOn,
     required this.metronomeSound,
+    required this.clickOneBarCountIn,
+    required this.trackRecordStartTapeMs,
   });
 
   Map<String, dynamic> toJson() {
@@ -342,6 +359,8 @@ class Session {
       'bpm': bpm,
       'metronomeOn': metronomeOn,
       'metronomeSound': metronomeSound,
+      'clickOneBarCountIn': clickOneBarCountIn,
+      'trackRecordStartTapeMs': trackRecordStartTapeMs,
     };
   }
 
@@ -372,6 +391,9 @@ class Session {
       bpm: json['bpm'] as int? ?? 120,
       metronomeOn: json['metronomeOn'] as bool? ?? false,
       metronomeSound: json['metronomeSound'] as String? ?? 'CLICK',
+      clickOneBarCountIn: json['clickOneBarCountIn'] as bool? ?? false,
+      trackRecordStartTapeMs:
+          fourTrackIntsFromJson(json['trackRecordStartTapeMs'], 0),
     );
   }
 }
@@ -1085,6 +1107,11 @@ class _RecorderScreenState extends State<RecorderScreen> {
   int _bpm = 120;
   bool _metronomeOn = false;
   String _metronomeSound = 'CLICK';
+  bool _clickOneBarCountIn = false;
+  /// Tape time (ms) where each track’s recorded audio lines up (after count-in).
+  final List<int> _trackRecordStartTapeMs = [0, 0, 0, 0];
+  /// Set when [AudioRecorder.start] succeeds; applied in [_stop] if the take is kept.
+  int? _pendingRecordStartTapeMs;
   bool _headphonesConfirmed = false;
 
   final AudioRecorder _recorder = AudioRecorder();
@@ -1333,8 +1360,39 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _showSnackbar('CLICK DISABLED: AUDIO CONFLICT');
   }
 
-  Future<void> _tryStartClickPlayback({required String contextTag}) async {
+  /// Load CLICK file, stop, seek to [tapeMs] — does **not** call [play].
+  Future<bool> _prepareClickPlayerAtTapeMs(int tapeMs,
+      {bool showBuildingUi = false}) async {
+    if (!_metronomeOn) return true;
+    try {
+      final path = await _ensureClickTrackFile(showBuildingUi: showBuildingUi);
+      if (path == null || !File(path).existsSync()) {
+        debugPrint('Orpheus Deck: CLICK prepare aborted (no file) tapeMs=$tapeMs');
+        return false;
+      }
+      if (_clickPlayerSourcePath != path) {
+        await _clickPlayer.setFilePath(path);
+        _clickPlayerSourcePath = path;
+      }
+      await _clickPlayer.setVolume(1.0);
+      await _clickPlayer.stop();
+      await _clickPlayer.seek(Duration(milliseconds: tapeMs));
+      debugPrint(
+          'Orpheus Deck: CLICK prepared (stopped+seek) tapeMs=$tapeMs path=$path');
+      return true;
+    } catch (e, st) {
+      debugPrint('Orpheus Deck: CLICK prepare FAILED tapeMs=$tapeMs $e\n$st');
+      _disableClickTrackDueToAudioConflict();
+      return false;
+    }
+  }
+
+  Future<void> _tryStartClickPlayback({
+    required String contextTag,
+    int? tapePositionMs,
+  }) async {
     if (!_metronomeOn) return;
+    final int pos = tapePositionMs ?? _playbackMs;
     final bool showBuild =
         contextTag == 'play' || contextTag == 'record';
     try {
@@ -1348,10 +1406,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
         _clickPlayerSourcePath = path;
       }
       await _clickPlayer.setVolume(1.0);
-      await _clickPlayer.seek(Duration(milliseconds: _playbackMs));
+      await _clickPlayer.seek(Duration(milliseconds: pos));
       await _clickPlayer.play();
       debugPrint(
-          'Orpheus Deck: CLICK player START ctx=$contextTag posMs=$_playbackMs '
+          'Orpheus Deck: CLICK player START ctx=$contextTag posMs=$pos '
           'bpm=$_bpm sound=$_metronomeSound recording=$_isRecording playing=$_isPlaying path=$path');
     } catch (e, st) {
       debugPrint(
@@ -1453,9 +1511,13 @@ class _RecorderScreenState extends State<RecorderScreen> {
       _trackVolumes[i] = 1.0;
       _trackMutes[i] = false;
       _trackSolos[i] = false;
+      _trackOffsets[i] = 0;
+      _trackRecordStartTapeMs[i] = 0;
     }
     _waveformCache.clear();
     _exports.clear();
+    _clickOneBarCountIn = false;
+    _pendingRecordStartTapeMs = null;
     _headphonesConfirmed = false;
     _recordDuration = 0;
     _playbackProgress = 0.0;
@@ -1511,6 +1573,11 @@ class _RecorderScreenState extends State<RecorderScreen> {
           _bpm = session.bpm;
           _metronomeOn = session.metronomeOn;
           _metronomeSound = session.metronomeSound;
+          _clickOneBarCountIn = session.clickOneBarCountIn;
+          final trs = session.trackRecordStartTapeMs;
+          for (int i = 0; i < 4; i++) {
+            _trackRecordStartTapeMs[i] = i < trs.length ? trs[i] : 0;
+          }
           _headphonesConfirmed = false;
         });
         _clickPlayerSourcePath = null;
@@ -1542,6 +1609,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
         bpm: _bpm,
         metronomeOn: _metronomeOn,
         metronomeSound: _metronomeSound,
+        clickOneBarCountIn: _clickOneBarCountIn,
+        trackRecordStartTapeMs: List<int>.from(_trackRecordStartTapeMs),
       );
 
       final dir = await getApplicationDocumentsDirectory();
@@ -2399,6 +2468,46 @@ class _RecorderScreenState extends State<RecorderScreen> {
                                         fontWeight: FontWeight.bold)),
                               ))
                         ]),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text("1 BAR COUNT-IN",
+                            style: TextStyle(
+                                color: Colors.white54,
+                                fontFamily: 'monospace')),
+                        GestureDetector(
+                          onTap: () {
+                            setState(
+                                () => _clickOneBarCountIn = !_clickOneBarCountIn);
+                            setDialogState(() {});
+                            debugPrint(
+                                'Orpheus Deck: CLICK COUNT-IN '
+                                '${_clickOneBarCountIn ? "ON" : "OFF"}');
+                            _saveSession();
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: _clickOneBarCountIn
+                                  ? Colors.white
+                                  : Colors.black,
+                              border: Border.all(color: Colors.white54),
+                            ),
+                            child: Text(
+                              _clickOneBarCountIn ? "ON" : "OFF",
+                              style: TextStyle(
+                                  color: _clickOneBarCountIn
+                                      ? Colors.black
+                                      : Colors.white,
+                                  fontFamily: 'monospace',
+                                  fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 16),
                     Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -3012,12 +3121,23 @@ class _RecorderScreenState extends State<RecorderScreen> {
           (DateTime.now().millisecondsSinceEpoch % 10000000).toString();
       final path = '${projDir.path}/track_${armedIndex}_$shortTimestamp.m4a';
 
+      _pendingRecordStartTapeMs = null;
       _updateMixerState();
 
-      // Stop all just_audio track players and reset position.
+      final int recordTapeStartMs = _playbackMs;
+      final int countInBarMs = (_clickOneBarCountIn && _metronomeOn)
+          ? (240000.0 / _bpm).round()
+          : 0;
+      final int clickPreRollSeekMs = countInBarMs > 0
+          ? (recordTapeStartMs - countInBarMs).clamp(0, 1 << 30)
+          : recordTapeStartMs;
+      final int actualCountInMs =
+          countInBarMs > 0 ? (recordTapeStartMs - clickPreRollSeekMs) : 0;
+
+      // Stop all just_audio track players; align to current tape position.
       for (var p in _trackPlayers) {
         await p.stop();
-        await p.seek(Duration.zero);
+        await p.seek(Duration(milliseconds: recordTapeStartMs));
       }
 
       // Prepare overdub backing tracks with just_audio.
@@ -3041,6 +3161,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
         try {
           await _trackPlayers[i].setFilePath(_trackFiles[i]!);
           await _trackPlayers[i].setVolume(vol);
+          await _trackPlayers[i]
+              .seek(Duration(milliseconds: recordTapeStartMs));
           debugPrint(
               "Orpheus Deck: OVERDUB TRK $i setFilePath OK | state: ${_trackPlayers[i].processingState}");
           overdubIndices.add(i);
@@ -3049,12 +3171,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
         }
       }
 
-      // ── OVERDUB LAUNCH (FIXED SEQUENCING) ────────────────────────────────
-      // Strategy: 
-      // 1. Prepare backing players (seek zero, set volume).
-      // 2. Start recorder and WAIT for confirmation.
-      // 3. Immediately start backing playback without awaiting it to finish.
-      //
       // Concurrent just_audio (backing and/or CLICK) requires
       // [AudioInterruptionMode.none] or the recorder yields to playback and
       // records silence on some devices.
@@ -3065,15 +3181,36 @@ class _RecorderScreenState extends State<RecorderScreen> {
           ? AudioInterruptionMode.none
           : AudioInterruptionMode.pause;
 
-      debugPrint("Orpheus Deck: RECORD LAUNCH - starting recorder first");
       debugPrint(
-          'Orpheus Deck: record isOverdub=$isOverdub clickEnabled=$clickEnabled '
+          'Orpheus Deck: RECORD LAUNCH tapeStartMs=$recordTapeStartMs '
+          'countInBarMs=$countInBarMs actualCountInMs=$actualCountInMs '
+          'isOverdub=$isOverdub clickEnabled=$clickEnabled '
           'hasConcurrentPlayback=$hasConcurrentPlayback '
           'audioInterruption=$recordInterruptionMode');
+
+      if (clickEnabled) {
+        final int prepareSeekMs =
+            actualCountInMs > 0 ? clickPreRollSeekMs : recordTapeStartMs;
+        final ok = await _prepareClickPlayerAtTapeMs(prepareSeekMs,
+            showBuildingUi: true);
+        if (!ok) return;
+        if (actualCountInMs > 0) {
+          debugPrint(
+              'Orpheus Deck: RECORD CLICK count-in ${actualCountInMs}ms '
+              '(1 bar=${countInBarMs}ms) seekMs=$prepareSeekMs → tape=$recordTapeStartMs @ $_bpm BPM');
+          await _clickPlayer.play();
+          await Future.delayed(Duration(milliseconds: actualCountInMs));
+          if (!mounted) {
+            await _stopClickPlayback();
+            return;
+          }
+        }
+      }
+
       final Stopwatch sw = Stopwatch();
       sw.start();
-      
-      // A. Start recorder
+
+      // A. Start recorder (after optional CLICK count-in).
       final recordCfg = _recordConfigForCurrentSession(recordInterruptionMode);
       debugPrint(
           'Orpheus Deck: RecordConfig json=${jsonEncode(recordCfg.toMap())}');
@@ -3084,36 +3221,50 @@ class _RecorderScreenState extends State<RecorderScreen> {
         );
         debugPrint(
             "Orpheus Deck: Recorder start CONFIRMED at ${sw.elapsedMilliseconds}ms path=$path");
+        _pendingRecordStartTapeMs = recordTapeStartMs;
       } catch (e, st) {
         debugPrint(
             "Orpheus Deck: Recorder start ERROR $e\n$st");
         sw.stop();
+        await _stopClickPlayback();
         return;
       }
 
-      // B. Start backing playback immediately after recorder confirms
+      // B. Backing + CLICK aligned to [recordTapeStartMs] (CLICK may already be playing after count-in).
       if (overdubIndices.isNotEmpty) {
-        debugPrint("Orpheus Deck: Starting ${overdubIndices.length} backing players");
-        // We do NOT await the futures here, just fire and forget so they play 
-        // while the recorder is running.
+        debugPrint(
+            "Orpheus Deck: Starting ${overdubIndices.length} backing players at tapeMs=$recordTapeStartMs");
         for (int i in overdubIndices) {
-           _trackPlayers[i].play(); 
+          await _trackPlayers[i].seek(Duration(milliseconds: recordTapeStartMs));
+          _trackPlayers[i].play();
         }
       }
 
-      if (_metronomeOn) {
-        unawaited(_tryStartClickPlayback(contextTag: 'record'));
+      if (clickEnabled) {
+        try {
+          await _clickPlayer.seek(Duration(milliseconds: recordTapeStartMs));
+          await _clickPlayer.play();
+          debugPrint(
+              'Orpheus Deck: CLICK seek+play tapeMs=$recordTapeStartMs '
+              'afterRecorder posMs=${_clickPlayer.position.inMilliseconds}');
+        } catch (e, st) {
+          debugPrint(
+              'Orpheus Deck: CLICK seek+play after recorder FAILED $e\n$st');
+          await _stopClickPlayback();
+          _disableClickTrackDueToAudioConflict();
+        }
       }
-      
+
       sw.stop();
 
-      // 2. Measure and store the offset.
       final int measuredOffsetMs = sw.elapsedMilliseconds;
       setState(() {
         _trackOffsets[armedIndex] = measuredOffsetMs;
       });
       debugPrint(
-          "Orpheus Deck: RECORD LAUNCH complete | recorder+players delta: ${measuredOffsetMs}ms | offset stored for track $armedIndex");
+          "Orpheus Deck: RECORD LAUNCH complete | delta=${measuredOffsetMs}ms "
+          "track=$armedIndex recordStartTapeMs=$recordTapeStartMs "
+          'countInBarMs=$countInBarMs actualCountInMs=$actualCountInMs');
 
       int recAmpLogTicks = 0;
       int clickBleedNearBeatLoudCount = 0;
@@ -3123,7 +3274,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
           .listen((amp) {
         if (recAmpLogTicks < recAmpDiagTicks) {
           if (clickEnabled) {
-            final recMs = recAmpLogTicks * 50;
+            final recMs = recordTapeStartMs + recAmpLogTicks * 50;
             final mpb = 60000.0 / _bpm;
             final phase = recMs % mpb;
             final nearBeat = phase < 35 || phase > mpb - 35;
@@ -3155,12 +3306,15 @@ class _RecorderScreenState extends State<RecorderScreen> {
         });
       });
 
+      final int tapeMax = _tapeTimelineMaxMs();
+      final double prog =
+          tapeMax > 0 ? (recordTapeStartMs / tapeMax).clamp(0.0, 1.0) : 0.0;
       setState(() {
         _isRecording = true;
         _isPlaying = true;
         _recordDuration = 0;
-        _playbackMs = 0;
-        _playbackProgress = 0.0;
+        _playbackMs = recordTapeStartMs;
+        _playbackProgress = prog;
       });
       _startTicker();
     }
@@ -3176,6 +3330,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
     if (_isRecording) {
       _amplitudeSub?.cancel();
+      final int? commitRecordTapeMs = _pendingRecordStartTapeMs;
+      _pendingRecordStartTapeMs = null;
       final path = await _recorder.stop();
       if (path != null) {
         int armedIndex = _armedTracks.indexOf(true);
@@ -3193,6 +3349,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
               _trackFiles[armedIndex] = path;
               _waveformCache[path] = List.from(_liveAmplitudes);
               _armedTracks[armedIndex] = false;
+              _trackRecordStartTapeMs[armedIndex] = commitRecordTapeMs ?? 0;
               recordedSomething = true;
             });
           } else {
@@ -3305,6 +3462,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
       _waveformCache.remove(filePath);
       _trackFiles[index] = null;
       _trackOffsets[index] = 0;
+      _trackRecordStartTapeMs[index] = 0;
     });
 
     debugPrint(
