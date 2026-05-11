@@ -3074,15 +3074,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
       sw.start();
       
       // A. Start recorder
+      final recordCfg = _recordConfigForCurrentSession(recordInterruptionMode);
+      debugPrint(
+          'Orpheus Deck: RecordConfig json=${jsonEncode(recordCfg.toMap())}');
       try {
         await _recorder.start(
-          RecordConfig(
-            encoder: AudioEncoder.aacLc,
-            numChannels: 1,
-            sampleRate: 44100,
-            bitRate: 128000,
-            audioInterruption: recordInterruptionMode,
-          ),
+          recordCfg,
           path: path,
         );
         debugPrint(
@@ -3119,13 +3116,35 @@ class _RecorderScreenState extends State<RecorderScreen> {
           "Orpheus Deck: RECORD LAUNCH complete | recorder+players delta: ${measuredOffsetMs}ms | offset stored for track $armedIndex");
 
       int recAmpLogTicks = 0;
+      int clickBleedNearBeatLoudCount = 0;
+      final int recAmpDiagTicks = clickEnabled ? 100 : 40;
       _amplitudeSub = _recorder
           .onAmplitudeChanged(const Duration(milliseconds: 50))
           .listen((amp) {
-        if (recAmpLogTicks < 40) {
-          debugPrint(
-              'Orpheus Deck: REC amplitude tick=$recAmpLogTicks '
-              'currentDb=${amp.current} isOverdub=$isOverdub clickEnabled=$clickEnabled');
+        if (recAmpLogTicks < recAmpDiagTicks) {
+          if (clickEnabled) {
+            final recMs = recAmpLogTicks * 50;
+            final mpb = 60000.0 / _bpm;
+            final phase = recMs % mpb;
+            final nearBeat = phase < 35 || phase > mpb - 35;
+            final loudish = amp.current > -38;
+            if (nearBeat && loudish) clickBleedNearBeatLoudCount++;
+            debugPrint(
+                'Orpheus Deck: REC amplitude tick=$recAmpLogTicks '
+                'currentDb=${amp.current} nearBeatWindow=$nearBeat '
+                'phaseMs=${phase.toStringAsFixed(0)} bpm=$_bpm '
+                'nearBeatLoudCount=$clickBleedNearBeatLoudCount');
+            if (recAmpLogTicks == recAmpDiagTicks - 1) {
+              debugPrint(
+                  'Orpheus Deck: REC CLICK bleed diag (${recAmpDiagTicks * 50}ms): '
+                  'nearBeat+loudishCount=$clickBleedNearBeatLoudCount/$recAmpDiagTicks '
+                  '(quiet room / covered mic: high count suggests capture-path bleed)');
+            }
+          } else {
+            debugPrint(
+                'Orpheus Deck: REC amplitude tick=$recAmpLogTicks '
+                'currentDb=${amp.current} isOverdub=$isOverdub clickEnabled=$clickEnabled');
+          }
           recAmpLogTicks++;
         }
         setState(() {
@@ -3368,7 +3387,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
   Future<void> _initAudioSession() async {
     final session = await as_sess.AudioSession.instance;
-    await session.configure(as_sess.AudioSessionConfiguration(
+    final cfg = as_sess.AudioSessionConfiguration(
       avAudioSessionCategory: as_sess.AVAudioSessionCategory.playAndRecord,
       avAudioSessionCategoryOptions:
           as_sess.AVAudioSessionCategoryOptions.defaultToSpeaker,
@@ -3381,8 +3400,43 @@ class _RecorderScreenState extends State<RecorderScreen> {
         usage: as_sess.AndroidAudioUsage.media,
       ),
       androidAudioFocusGainType: as_sess.AndroidAudioFocusGainType.gain,
-    ));
-    debugPrint("Orpheus Deck: Audio session configured for playAndRecord");
+    );
+    await session.configure(cfg);
+    debugPrint(
+        'Orpheus Deck: Audio session configured playAndRecord json=${jsonEncode(cfg.toJson())}');
+    try {
+      final live = await as_sess.AudioSession.instance;
+      debugPrint(
+          'Orpheus Deck: AudioSession active id=${identityHashCode(live)} '
+          'isConfigured=${live.isConfigured} androidUsage=${live.configuration?.androidAudioAttributes?.usage}');
+    } catch (e, st) {
+      debugPrint('Orpheus Deck: AudioSession post-config log err $e\n$st');
+    }
+  }
+
+  /// Recording config: explicit Android [AndroidAudioSource.mic] avoids
+  /// OEM [defaultSource] mapping to voice/communication paths that can mix
+  /// playback (CLICK) into the encoded stream. AGC/NS/AEC flags stay off.
+  RecordConfig _recordConfigForCurrentSession(
+      AudioInterruptionMode interruption) {
+    return RecordConfig(
+      encoder: AudioEncoder.aacLc,
+      numChannels: 1,
+      sampleRate: 44100,
+      bitRate: 128000,
+      autoGain: false,
+      echoCancel: false,
+      noiseSuppress: false,
+      audioInterruption: interruption,
+      androidConfig: const AndroidRecordConfig(
+        useLegacy: false,
+        muteAudio: false,
+        manageBluetooth: true,
+        audioSource: AndroidAudioSource.mic,
+        speakerphone: false,
+        audioManagerMode: AudioManagerMode.modeNormal,
+      ),
+    );
   }
 
   Future<void> _testOverdubEngine() async {
