@@ -35,8 +35,9 @@ import 'package:open_file/open_file.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:audio_session/audio_session.dart' as as_sess;
 
-/// One cassette side — matches ORPHEUS_DESIGN_MANIFESTO.md.
-const int kOrpheusTapeLengthMs = 15 * 60 * 1000;
+/// One cassette side — fixed transport length (0 … tapeLengthMs).
+/// Clip lengths do not shorten the tape; matches ORPHEUS_DESIGN_MANIFESTO.md.
+const int tapeLengthMs = 15 * 60 * 1000;
 
 /// Parameters for [buildClickTrackWavBytes] (must stay simple for [compute]).
 class ClickWavParams {
@@ -1193,12 +1194,21 @@ class _RecorderScreenState extends State<RecorderScreen> {
     return name == _clickFilenameForCurrentSpec();
   }
 
-  /// Tape length for transport clock: content duration, or 15:00 when click-only practice.
-  int _tapeTimelineMaxMs() {
-    final content = _getMaxPlaybackDuration();
-    if (content > 0) return content;
-    if (_metronomeOn) return kOrpheusTapeLengthMs;
-    return 0;
+  /// Upper bound for [_playbackMs] during transport (play or record).
+  /// Always the physical tape side — never the longest recorded clip.
+  int _tapeTransportMaxMs() => tapeLengthMs;
+
+  /// Longest clip on the deck (ms), for diagnostics only — not the tape clock cap.
+  int _getMaxPlaybackDuration() {
+    int maxMs = 0;
+    for (int i = 0; i < 4; i++) {
+      if (_trackFiles[i] != null &&
+          _waveformCache.containsKey(_trackFiles[i]!)) {
+        int ms = _waveformCache[_trackFiles[i]!]!.length * 50;
+        if (ms > maxMs) maxMs = ms;
+      }
+    }
+    return maxMs;
   }
 
   Future<void> _pruneStaleClickWavs(Directory projDir, String keepPath) async {
@@ -2737,24 +2747,22 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _tickerTimer?.cancel();
     _tickerTimer = Timer.periodic(const Duration(milliseconds: 50), (Timer t) {
       if (_isPlaying) {
-        final int maxMs = _tapeTimelineMaxMs();
-        if (maxMs > 0) {
-          final int nextMs = _playbackMs + 50;
-          if (nextMs >= maxMs) {
-            setState(() {
-              _playbackMs = maxMs;
-              _playbackProgress = 1.0;
-            });
-            scheduleMicrotask(() async {
-              await _stop();
-            });
-          } else {
-            setState(() {
-              _playbackMs = nextMs;
-              _playbackProgress = _playbackMs / maxMs;
-              if (_playbackProgress > 1.0) _playbackProgress = 1.0;
-            });
-          }
+        final int maxMs = _tapeTransportMaxMs();
+        final int nextMs = _playbackMs + 50;
+        if (nextMs >= maxMs) {
+          setState(() {
+            _playbackMs = maxMs;
+            _playbackProgress = 1.0;
+          });
+          scheduleMicrotask(() async {
+            await _stop(transportStopReason: 'TAPE_END');
+          });
+        } else {
+          setState(() {
+            _playbackMs = nextMs;
+            _playbackProgress = _playbackMs / maxMs;
+            if (_playbackProgress > 1.0) _playbackProgress = 1.0;
+          });
         }
       }
       if (t.tick % 20 == 0) {
@@ -2766,18 +2774,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
         unawaited(_resyncClickPlayerToTransport());
       }
     });
-  }
-
-  int _getMaxPlaybackDuration() {
-    int maxMs = 0;
-    for (int i = 0; i < 4; i++) {
-      if (_trackFiles[i] != null &&
-          _waveformCache.containsKey(_trackFiles[i]!)) {
-        int ms = _waveformCache[_trackFiles[i]!]!.length * 50;
-        if (ms > maxMs) maxMs = ms;
-      }
-    }
-    return maxMs;
   }
 
   bool get _isOverdubbing {
@@ -2869,6 +2865,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
       _startTicker();
       _attachPlayerCompletionListeners(readyIndices);
+      debugPrint(
+        'Orpheus Deck: PLAY_TRANSPORT_START '
+        'tapeLengthMs=$tapeLengthMs playbackMs=$_playbackMs '
+        'contentMaxMs=${_getMaxPlaybackDuration()} '
+        'activeTrackPlayers=${readyIndices.length}',
+      );
     }
   }
 
@@ -2896,7 +2898,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
           if (completedCount >= total && _isPlaying && !_isRecording) {
             debugPrint(
                 'Orpheus Deck: All $total active players completed — auto-stopping');
-            _stop();
+            _stop(transportStopReason: 'ALL_PLAYERS_COMPLETE');
           }
         }
       });
@@ -3088,6 +3090,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
         debugPrint(
             "Orpheus Deck: Recorder start ERROR $e\n$st");
         sw.stop();
+        final int cm = _getMaxPlaybackDuration();
+        debugPrint(
+          'Orpheus Deck: TRANSPORT_STOP reason=RECORDER_ERROR '
+          'tapeLengthMs=$tapeLengthMs playbackMs=$_playbackMs contentMaxMs=$cm '
+          'recording=false playing=false',
+        );
         return;
       }
 
@@ -3162,15 +3170,30 @@ class _RecorderScreenState extends State<RecorderScreen> {
         _playbackMs = 0;
         _playbackProgress = 0.0;
       });
+      debugPrint(
+        'Orpheus Deck: RECORD_TRANSPORT_START '
+        'tapeLengthMs=$tapeLengthMs playbackMs=$_playbackMs '
+        'contentMaxMs=${_getMaxPlaybackDuration()}',
+      );
       _startTicker();
     }
   }
 
-  Future<void> _stop() async {
+  Future<void> _stop({String transportStopReason = 'USER_STOP'}) async {
     if (_isExporting && _exportSessionId != null) {
       FFmpegKit.cancel(_exportSessionId);
       return;
     }
+
+    final int contentMaxMs = _getMaxPlaybackDuration();
+    debugPrint(
+      'Orpheus Deck: TRANSPORT_STOP '
+      'reason=$transportStopReason '
+      'tapeLengthMs=$tapeLengthMs '
+      'playbackMs=$_playbackMs '
+      'contentMaxMs=$contentMaxMs '
+      'recording=$_isRecording playing=$_isPlaying',
+    );
 
     bool recordedSomething = false;
 
