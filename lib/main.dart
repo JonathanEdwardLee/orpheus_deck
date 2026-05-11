@@ -2235,10 +2235,28 @@ class _RecorderScreenState extends State<RecorderScreen> {
             shape: Border.all(color: Colors.white, width: 2),
             title: const Text("EXPORT COMPLETE",
                 style: TextStyle(color: Colors.white, fontFamily: 'monospace')),
-            content: SelectableText(
-              body,
-              style: const TextStyle(
-                  color: Colors.white54, fontFamily: 'monospace', fontSize: 10),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SelectableText(
+                  body,
+                  style: const TextStyle(
+                      color: Colors.white54,
+                      fontFamily: 'monospace',
+                      fontSize: 10),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'EXPORT USES CURRENT MIXER STATE',
+                  style: TextStyle(
+                    color: Colors.white38,
+                    fontFamily: 'monospace',
+                    fontSize: 9,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
             ),
             actions: [
               TextButton(
@@ -3618,79 +3636,87 @@ class DeckHeader extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                "ORPHEUS DECK",
-                style: TextStyle(
-                  color: Colors.white,
-                  fontFamily: 'monospace',
-                  fontWeight: FontWeight.bold,
-                  fontSize: 20,
-                  letterSpacing: 2,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  GestureDetector(
-                    onTap: onProjectTap,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 4, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.white24,
-                        border: Border.all(color: Colors.white54, width: 1),
-                      ),
-                      child: Text(
-                        "PROJECT: $projectName",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontFamily: 'monospace',
-                          fontWeight: FontWeight.bold,
-                          fontSize: 10,
-                          letterSpacing: 1,
-                        ),
-                      ),
-                    ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  "ORPHEUS DECK",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.bold,
+                    fontSize: 20,
+                    letterSpacing: 2,
                   ),
-                  if (hasUndo) ...[
-                    const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: onUndo,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 4, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.black,
-                          border: Border.all(color: Colors.white, width: 1),
-                        ),
-                        child: const Text(
-                          "UNDO",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontFamily: 'monospace',
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: onProjectTap,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.white24,
+                            border:
+                                Border.all(color: Colors.white54, width: 1),
+                          ),
+                          child: Text(
+                            "PROJECT: $projectName",
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            softWrap: false,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontFamily: 'monospace',
+                              fontWeight: FontWeight.bold,
+                              fontSize: 10,
+                              letterSpacing: 1,
+                            ),
                           ),
                         ),
                       ),
                     ),
+                    if (hasUndo) ...[
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onTap: onUndo,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.black,
+                            border: Border.all(color: Colors.white, width: 1),
+                          ),
+                          child: const Text(
+                            "UNDO",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontFamily: 'monospace',
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
-                ],
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                "FOUR-TRACK RECORDER // MK-I",
-                style: TextStyle(
-                  color: Colors.white54,
-                  fontFamily: 'monospace',
-                  fontSize: 8,
-                  letterSpacing: 1,
                 ),
-              ),
-            ],
+                const SizedBox(height: 4),
+                const Text(
+                  "FOUR-TRACK RECORDER // MK-I",
+                  style: TextStyle(
+                    color: Colors.white54,
+                    fontFamily: 'monospace',
+                    fontSize: 8,
+                    letterSpacing: 1,
+                  ),
+                ),
+              ],
+            ),
           ),
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
