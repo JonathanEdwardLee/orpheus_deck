@@ -35,6 +35,8 @@ import 'package:open_file/open_file.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:audio_session/audio_session.dart' as as_sess;
 
+import 'widgets/tape_reel_transport.dart';
+
 /// One cassette side — fixed transport length (0 … tapeLengthMs).
 /// Clip lengths do not shorten the tape; matches ORPHEUS_DESIGN_MANIFESTO.md.
 const int tapeLengthMs = 15 * 60 * 1000;
@@ -1209,6 +1211,24 @@ class _RecorderScreenState extends State<RecorderScreen> {
       }
     }
     return maxMs;
+  }
+
+  /// Per-track clip length from cached waveform (ms).
+  int _trackContentDurationMs(int trackIndex) {
+    final p = _trackFiles[trackIndex];
+    if (p == null || !_waveformCache.containsKey(p)) return 0;
+    return _waveformCache[p]!.length * 50;
+  }
+
+  void _onTapeHeadSeekFromReel(int ms) {
+    if (_isPlaying || _isRecording || _isExporting) return;
+    setState(() {
+      _playbackMs = ms.clamp(0, tapeLengthMs);
+      _playbackProgress = tapeLengthMs > 0 ? _playbackMs / tapeLengthMs : 0.0;
+    });
+    debugPrint(
+      'Orpheus Deck: TAPE_HEAD_SEEK playbackMs=$_playbackMs tapeLengthMs=$tapeLengthMs',
+    );
   }
 
   Future<void> _pruneStaleClickWavs(Directory projDir, String keepPath) async {
@@ -2805,17 +2825,19 @@ class _RecorderScreenState extends State<RecorderScreen> {
   Future<void> _play() async {
     if (_isRecording || _isExporting) return;
     if (!_isPlaying) {
+      final int startMs = _playbackMs.clamp(0, tapeLengthMs);
+
       setState(() {
         _isPlaying = true;
         _recordDuration = 0;
-        _playbackMs = 0;
-        _playbackProgress = 0.0;
+        _playbackMs = startMs;
+        _playbackProgress =
+            tapeLengthMs > 0 ? startMs / tapeLengthMs : 0.0;
       });
 
-      // Stop and reset all just_audio track players.
+      // Stop all just_audio track players; seek to tape head after sources load.
       for (var p in _trackPlayers) {
         await p.stop();
-        await p.seek(Duration.zero);
       }
 
       // Prepare sources. setFilePath must complete before play().
@@ -2848,6 +2870,18 @@ class _RecorderScreenState extends State<RecorderScreen> {
           readyIndices.add(i);
         } catch (e) {
           debugPrint("Orpheus Deck: PLAY TRK $i setFilePath ERROR - $e");
+        }
+      }
+
+      for (int i in readyIndices) {
+        final int cap = _trackContentDurationMs(i);
+        if (cap > 0) {
+          final int pos = min(startMs, cap);
+          try {
+            await _trackPlayers[i].seek(Duration(milliseconds: pos));
+          } catch (e) {
+            debugPrint('Orpheus Deck: PLAY seek TRK $i err $e');
+          }
         }
       }
 
@@ -3389,7 +3423,16 @@ class _RecorderScreenState extends State<RecorderScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
+              TapeReelTransport(
+                playbackMs: _playbackMs,
+                tapeLengthMs: tapeLengthMs,
+                isPlaying: _isPlaying,
+                isRecording: _isRecording,
+                seekEnabled: !_isExporting,
+                onTapeSeekMs: _onTapeHeadSeekFromReel,
+              ),
+              const SizedBox(height: 12),
               TransportControls(
                 isPlaying: _isPlaying,
                 isRecording: _isRecording,
