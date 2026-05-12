@@ -21,7 +21,8 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, ValueNotifier, compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:record/record.dart';
