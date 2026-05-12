@@ -835,7 +835,7 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
                                             padding: const EdgeInsets.symmetric(
                                                 horizontal: 8, vertical: 2),
                                             child: const Text(
-                                                "Four-Track Recorder",
+                                                "Four-Track Audio Recorder",
                                                 style: TextStyle(
                                                     color: Colors.white54,
                                                     fontFamily: 'monospace',
@@ -1191,6 +1191,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
   double _playbackProgress = 0.0;
   int _playbackMs = 0;
 
+  /// Drives the header tape clock — updated with [_playbackMs] so the display
+  /// always repaints every transport tick (playback as well as idle seek).
+  final ValueNotifier<int> _playbackClock = ValueNotifier<int>(0);
+
   final UndoState _lastUndo = UndoState();
 
   @override
@@ -1240,6 +1244,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
       player.dispose();
     }
 
+    _playbackClock.dispose();
+
     if (_isExporting && _exportSessionId != null) {
       FFmpegKit.cancel(_exportSessionId);
     }
@@ -1285,6 +1291,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _playbackMs = ms.clamp(0, maxMs);
     _playbackProgress = maxMs > 0 ? _playbackMs / maxMs : 0.0;
     if (_playbackProgress > 1.0) _playbackProgress = 1.0;
+    _playbackClock.value = _playbackMs;
   }
 
   /// Single entry point for moving the tape head (transport clock + reel + dial).
@@ -2474,19 +2481,21 @@ class _RecorderScreenState extends State<RecorderScreen> {
                       color: Colors.white,
                       fontFamily: 'monospace',
                       fontWeight: FontWeight.bold)),
-              content: Column(
+              content: SingleChildScrollView(
+                child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Timeline WAV in project folder — not mixed to export. Turn OFF for silent monitor.',
+                      'CLICK PLAYS A GUIDE RHYTHM WHILE YOU RECORD. IT IS NOT INCLUDED IN EXPORTS.',
                       style: TextStyle(
-                          color: Colors.white54,
+                          color: Colors.white70,
                           fontFamily: 'monospace',
                           fontSize: 11,
-                          height: 1.35),
+                          height: 1.4,
+                          letterSpacing: 0.3),
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 18),
                     Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
@@ -2622,6 +2631,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
                           )
                         ])
                   ]),
+              ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
@@ -2707,11 +2717,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
                     _stop();
                     Navigator.pop(context);
                     Navigator.pushReplacementNamed(context, '/home');
-                  }),
-                  const SizedBox(height: 24),
-                  _menuButton("TEST OVERDUB ENGINE", () {
-                    Navigator.pop(context);
-                    _testOverdubEngine();
                   }),
                 ],
               ),
@@ -3069,32 +3074,29 @@ class _RecorderScreenState extends State<RecorderScreen> {
   void _showHeadphonesWarning() {
     showDialog(
         context: context,
+        barrierDismissible: false,
         builder: (context) {
           return AlertDialog(
             backgroundColor: Colors.black,
             shape: Border.all(color: Colors.white, width: 2),
-            title: const Text("WARNING",
+            title: const Text("MONITOR NOTICE",
                 style: TextStyle(color: Colors.white, fontFamily: 'monospace')),
             content: const Text(
-                "USE HEADPHONES FOR OVERDUB TO PREVENT AUDIO BLEED.",
+                "USE HEADPHONES FOR CLEAN RECORDING.\n"
+                "SPEAKER PLAYBACK MAY BLEED INTO THE MIC.",
                 style: TextStyle(
                     color: Colors.white54,
                     fontFamily: 'monospace',
-                    fontSize: 12)),
+                    fontSize: 12,
+                    height: 1.35)),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text("CANCEL",
-                    style: TextStyle(
-                        color: Colors.white54, fontFamily: 'monospace')),
-              ),
               TextButton(
                 onPressed: () {
                   setState(() => _headphonesConfirmed = true);
                   Navigator.pop(context);
                   _record();
                 },
-                child: const Text("I AM USING HEADPHONES",
+                child: const Text("OK",
                     style: TextStyle(
                         color: Colors.white,
                         fontFamily: 'monospace',
@@ -3121,8 +3123,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
       return;
     }
 
-    bool isOverdub = _trackFiles.any((file) => file != null);
-    if (isOverdub && !_headphonesConfirmed) {
+    final bool isOverdub = _trackFiles.any((file) => file != null);
+    if (!_headphonesConfirmed) {
       _showHeadphonesWarning();
       return;
     }
@@ -3486,7 +3488,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
             children: [
               DeckHeader(
                 statusLabel: _deckStatus,
-                playbackMs: _playbackMs,
+                playbackClock: _playbackClock,
                 projectName: _projectName,
                 onProjectTap: _showProjectMenu,
                 hasUndo: _lastUndo.hasUndo,
@@ -3611,76 +3613,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
     );
   }
 
-  Future<void> _testOverdubEngine() async {
-    _showSnackbar('STARTING OVERDUB DIAGNOSTIC...');
-    
-    int? sourceIdx;
-    for (int i=0; i<4; i++) {
-      if (_trackFiles[i] != null) {
-        sourceIdx = i;
-        break;
-      }
-    }
-    
-    if (sourceIdx == null) {
-      _showSnackbar('ERR: RECORD AT LEAST 1 TRACK FIRST');
-      return;
-    }
-
-    final String sourcePath = _trackFiles[sourceIdx]!;
-    debugPrint('Orpheus Deck: [DIAG] Source found at TRK $sourceIdx: $sourcePath');
-
-    final dir = await getApplicationDocumentsDirectory();
-    final testPath = '${dir.path}/overdub_test.m4a';
-    final testFile = File(testPath);
-    if (testFile.existsSync()) testFile.deleteSync();
-
-    await _trackPlayers[sourceIdx].stop();
-    await _trackPlayers[sourceIdx].setFilePath(sourcePath);
-    await _trackPlayers[sourceIdx].setVolume(1.0);
-
-    debugPrint('Orpheus Deck: [DIAG] Starting 10s overdub test...');
-    final sw = Stopwatch();
-    sw.start();
-
-    debugPrint('Orpheus Deck: [DIAG] T+${sw.elapsedMilliseconds}ms - Requesting recorder start');
-    try {
-      await _recorder.start(const RecordConfig(), path: testPath);
-      debugPrint('Orpheus Deck: [DIAG] T+${sw.elapsedMilliseconds}ms - Recorder confirmed');
-
-      debugPrint('Orpheus Deck: [DIAG] T+${sw.elapsedMilliseconds}ms - Requesting playback start');
-      _trackPlayers[sourceIdx].play();
-      debugPrint('Orpheus Deck: [DIAG] T+${sw.elapsedMilliseconds}ms - Playback requested (fire-and-forget)');
-
-      await Future.delayed(const Duration(seconds: 10));
-
-      debugPrint('Orpheus Deck: [DIAG] T+${sw.elapsedMilliseconds}ms - Stopping test');
-      await _recorder.stop();
-      await _trackPlayers[sourceIdx].stop();
-      sw.stop();
-
-      final int size = File(testPath).existsSync() ? File(testPath).lengthSync() : 0;
-      debugPrint('Orpheus Deck: [DIAG] Test complete. Saved file size: $size bytes');
-      
-      if (size > 1000) {
-        _showSnackbar('DIAG SUCCESS: $size BYTES');
-      } else {
-        _showSnackbar('DIAG FAILURE: FILE EMPTY');
-      }
-    } catch (e) {
-      debugPrint('Orpheus Deck: [DIAG] ERROR during test: $e');
-      _showSnackbar('DIAG ERROR: $e');
-      await _recorder.stop();
-      await _trackPlayers[sourceIdx].stop();
-      sw.stop();
-    }
-  }
 }
 
 class DeckHeader extends StatelessWidget {
   final String statusLabel;
-  /// Tape transport position (ms) — same clock as reel and dial.
-  final int playbackMs;
+  /// Tape transport position (ms), aligned with the reel / slider clock.
+  final ValueListenable<int> playbackClock;
   final String projectName;
   final VoidCallback onProjectTap;
   final bool hasUndo;
@@ -3689,19 +3627,12 @@ class DeckHeader extends StatelessWidget {
   const DeckHeader({
     super.key,
     required this.statusLabel,
-    required this.playbackMs,
+    required this.playbackClock,
     required this.projectName,
     required this.onProjectTap,
     this.hasUndo = false,
     required this.onUndo,
   });
-
-  String get _formattedTime {
-    final int totalSec = playbackMs ~/ 1000;
-    final m = (totalSec ~/ 60).toString().padLeft(2, '0');
-    final s = (totalSec % 60).toString().padLeft(2, '0');
-    return '$m:$s';
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -3786,7 +3717,7 @@ class DeckHeader extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 const Text(
-                  "FOUR-TRACK RECORDER // MK-I",
+                  "FOUR-TRACK AUDIO RECORDER // MK-I",
                   style: TextStyle(
                     color: Colors.white54,
                     fontFamily: 'monospace',
@@ -3800,15 +3731,25 @@ class DeckHeader extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text(
-                _formattedTime,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 32,
-                  fontFamily: 'monospace',
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 4,
-                ),
+              ValueListenableBuilder<int>(
+                valueListenable: playbackClock,
+                builder: (context, ms, _) {
+                  final int totalSec = ms ~/ 1000;
+                  final m =
+                      (totalSec ~/ 60).toString().padLeft(2, '0');
+                  final s =
+                      (totalSec % 60).toString().padLeft(2, '0');
+                  return Text(
+                    '$m:$s',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 32,
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 4,
+                    ),
+                  );
+                },
               ),
               Row(
                 children: [

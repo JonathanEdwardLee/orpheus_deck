@@ -32,7 +32,8 @@ flutter:
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
-  image_path: "assets/images/launcher_icon_source.png"
+  # Padded foreground (~58% of 1024 canvas) so cassette stays inside Android adaptive safe zone.
+  image_path: "assets/images/launcher_icon_adaptive_foreground.png"
   min_sdk_android: 21
   adaptive_icon_background: "#000000"
-  adaptive_icon_foreground: "assets/images/launcher_icon_source.png"
+  adaptive_icon_foreground: "assets/images/launcher_icon_adaptive_foreground.png"
