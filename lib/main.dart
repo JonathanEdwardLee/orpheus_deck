@@ -1201,6 +1201,16 @@ class _RecorderScreenState extends State<RecorderScreen> {
   int _playbackMs = 0;
   int? _activeRecordTapeStartMs;
 
+  /// Tracks scheduled for playback that have not yet reached their tape-start.
+  /// Promoted to play() inside [_startTicker] when [_playbackMs] catches up.
+  final Set<int> _pendingPlaybackIndices = {};
+
+  /// Total scheduled tracks (immediate + pending) for the current PLAY session.
+  /// Used together with [_completedPlaybackCount] for the auto-stop check so
+  /// tape transport keeps running until every scheduled clip has finished.
+  int _scheduledPlaybackCount = 0;
+  int _completedPlaybackCount = 0;
+
   /// Drives the header tape clock — updated with [_playbackMs] so the display
   /// always repaints every transport tick (playback as well as idle seek).
   final ValueNotifier<int> _playbackClock = ValueNotifier<int>(0);
@@ -2909,12 +2919,47 @@ class _RecorderScreenState extends State<RecorderScreen> {
           setState(() {
             _applyTapeHeadClamped(nextMs);
           });
+          // Both PLAY and RECORD/overdub schedule pending tracks; the ticker
+          // promotes them as the tape head reaches each track's tapeStart.
+          if (_pendingPlaybackIndices.isNotEmpty) {
+            _maybeStartPendingTracks();
+          }
         }
       }
       if (t.tick % 20 == 0 && _isPlaying && _metronomeOn) {
         unawaited(_resyncClickPlayerToTransport());
       }
     });
+  }
+
+  /// Promote any pending tracks whose tape-start position has been reached.
+  /// Fires play() fire-and-forget and attaches a completion listener so the
+  /// auto-stop counter still observes their end. Shared between PLAY and
+  /// RECORD/overdub monitoring; the log prefix and listener behavior depend
+  /// on which transport is active.
+  void _maybeStartPendingTracks() {
+    if (_pendingPlaybackIndices.isEmpty) return;
+    final List<int> toStart = [];
+    for (final i in _pendingPlaybackIndices) {
+      if (_playbackMs >= _trackTapeStartMs[i]) {
+        toStart.add(i);
+      }
+    }
+    if (toStart.isEmpty) return;
+    final String modeTag = _isRecording ? 'REC BACKING' : 'PLAY TRK';
+    for (final i in toStart) {
+      _pendingPlaybackIndices.remove(i);
+      try {
+        _trackPlayers[i].play();
+      } catch (e) {
+        debugPrint('Orpheus Deck: $modeTag $i DELAYED_START play() err $e');
+      }
+      _attachCompletionListenerFor(i);
+      debugPrint(
+        'Orpheus Deck: $modeTag $i DELAYED_START '
+        'tapeStart=${_trackTapeStartMs[i]} playbackMs=$_playbackMs',
+      );
+    }
   }
 
   bool get _isOverdubbing {
@@ -2945,116 +2990,183 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
   Future<void> _play() async {
     if (_isRecording || _isExporting) return;
-    if (!_isPlaying) {
-      final int startMs = _playbackMs.clamp(0, tapeLengthMs);
+    if (_isPlaying) return;
 
-      setState(() {
-        _isPlaying = true;
-        _applyTapeHeadClamped(startMs);
-      });
+    final int startMs = _playbackMs.clamp(0, tapeLengthMs);
 
-      // Stop all just_audio track players; seek to tape head after sources load.
-      for (var p in _trackPlayers) {
-        await p.stop();
-      }
+    setState(() {
+      _isPlaying = true;
+      _applyTapeHeadClamped(startMs);
+    });
 
-      // Prepare sources. setFilePath must complete before play().
-      final List<int> readyIndices = [];
-      for (int i = 0; i < 4; i++) {
-        if (_trackFiles[i] == null) continue;
-        final file = File(_trackFiles[i]!);
-        final bool exists = file.existsSync();
-        final int size = exists ? file.lengthSync() : 0;
-        final bool audible = _isTrackAudible(i);
-        final double vol = audible ? _trackVolumes[i] : 0.0;
-
-        debugPrint(
-            "Orpheus Deck: PLAY TRK $i | path: ${_trackFiles[i]} | exists: $exists | size: $size | mute: ${_trackMutes[i]} | solo: ${_trackSolos[i]} | vol: $vol | audible: $audible | player: ${_trackPlayers[i].hashCode}");
-
-        if (!exists || size == 0) {
-          debugPrint("Orpheus Deck: PLAY TRK $i SKIP - missing/empty");
-          continue;
-        }
-        if (!audible) {
-          debugPrint(
-              "Orpheus Deck: PLAY TRK $i SKIP - not audible (muted/solo)");
-          continue;
-        }
-        try {
-          await _trackPlayers[i].setFilePath(_trackFiles[i]!);
-          await _trackPlayers[i].setVolume(vol);
-          debugPrint(
-              "Orpheus Deck: PLAY TRK $i setFilePath OK | state: ${_trackPlayers[i].processingState}");
-          readyIndices.add(i);
-        } catch (e) {
-          debugPrint("Orpheus Deck: PLAY TRK $i setFilePath ERROR - $e");
-        }
-      }
-
-      for (int i in readyIndices) {
-        final int cap = _trackContentDurationMs(i);
-        if (cap > 0) {
-          final int pos = min(startMs, cap);
-          try {
-            await _trackPlayers[i].seek(Duration(milliseconds: pos));
-          } catch (e) {
-            debugPrint('Orpheus Deck: PLAY seek TRK $i err $e');
-          }
-        }
-      }
-
-      // Fire play() on all ready players simultaneously.
-      debugPrint(
-          "Orpheus Deck: Starting ${readyIndices.length} just_audio players: $readyIndices");
-      try {
-        await Future.wait(readyIndices.map((i) => _trackPlayers[i].play()));
-        debugPrint("Orpheus Deck: All players play() OK");
-      } catch (e) {
-        debugPrint("Orpheus Deck: play() ERROR - $e");
-      }
-
-      await _tryStartClickPlayback(contextTag: 'play');
-
-      _startTicker();
-      _attachPlayerCompletionListeners(readyIndices);
-      debugPrint(
-        'Orpheus Deck: PLAY_TRANSPORT_START '
-        'tapeLengthMs=$tapeLengthMs playbackMs=$_playbackMs '
-        'contentMaxMs=${_getMaxPlaybackDuration()} '
-        'activeTrackPlayers=${readyIndices.length}',
-      );
+    // Stop all just_audio track players; per-track seek happens after the
+    // source loads, using the new trackTapeStartMs model.
+    for (var p in _trackPlayers) {
+      await p.stop();
     }
+
+    _pendingPlaybackIndices.clear();
+    _resetCompletionTracking();
+
+    debugPrint(
+      'Orpheus Deck: PLAY_START tape head playbackMs=$startMs '
+      'tapeLengthMs=$tapeLengthMs',
+    );
+
+    final List<int> immediate = [];
+    final List<int> pending = [];
+
+    for (int i = 0; i < 4; i++) {
+      if (_trackFiles[i] == null) continue;
+      final file = File(_trackFiles[i]!);
+      final bool exists = file.existsSync();
+      final int size = exists ? file.lengthSync() : 0;
+      final bool audible = _isTrackAudible(i);
+      final double vol = audible ? _trackVolumes[i] : 0.0;
+      final int tapeStart = _trackTapeStartMs[i];
+      final int clipDur = _trackContentDurationMs(i);
+      final int tapeEnd = tapeStart + clipDur;
+      final bool past = clipDur > 0 && startMs >= tapeEnd;
+      final bool delayed = startMs < tapeStart;
+      final bool shouldPlayNow = !past && !delayed;
+
+      debugPrint(
+        "Orpheus Deck: PLAY TRK $i | path: ${_trackFiles[i]} | "
+        "exists=$exists size=$size | "
+        "tapeStart=$tapeStart clipDurMs=$clipDur tapeEnd=$tapeEnd | "
+        "shouldPlayNow=$shouldPlayNow past=$past delayed=$delayed | "
+        "mute=${_trackMutes[i]} solo=${_trackSolos[i]} vol=$vol audible=$audible",
+      );
+
+      if (!exists || size == 0) {
+        debugPrint("Orpheus Deck: PLAY TRK $i SKIP - missing/empty");
+        continue;
+      }
+      if (!audible) {
+        debugPrint(
+            "Orpheus Deck: PLAY TRK $i SKIP - not audible (muted/solo)");
+        continue;
+      }
+      if (past) {
+        debugPrint(
+          'Orpheus Deck: PLAY TRK $i SKIP - past tapeEnd '
+          '(tapeEnd=$tapeEnd startMs=$startMs)',
+        );
+        continue;
+      }
+
+      try {
+        await _trackPlayers[i].setFilePath(_trackFiles[i]!);
+        await _trackPlayers[i].setVolume(vol);
+        debugPrint(
+            "Orpheus Deck: PLAY TRK $i setFilePath OK | state: ${_trackPlayers[i].processingState}");
+      } catch (e) {
+        debugPrint("Orpheus Deck: PLAY TRK $i setFilePath ERROR - $e");
+        continue;
+      }
+
+      if (shouldPlayNow) {
+        final int seekMs = (startMs - tapeStart).clamp(0, clipDur);
+        try {
+          await _trackPlayers[i].seek(Duration(milliseconds: seekMs));
+        } catch (e) {
+          debugPrint('Orpheus Deck: PLAY seek TRK $i err $e');
+        }
+        immediate.add(i);
+        debugPrint(
+          'Orpheus Deck: PLAY TRK $i SCHEDULED=IMMEDIATE seekMs=$seekMs '
+          'tapeStart=$tapeStart tapeEnd=$tapeEnd',
+        );
+      } else {
+        try {
+          await _trackPlayers[i].seek(Duration.zero);
+        } catch (e) {
+          debugPrint('Orpheus Deck: PLAY seek TRK $i err $e');
+        }
+        _pendingPlaybackIndices.add(i);
+        pending.add(i);
+        debugPrint(
+          'Orpheus Deck: PLAY TRK $i SCHEDULED=PENDING '
+          'tapeStart=$tapeStart tapeEnd=$tapeEnd',
+        );
+      }
+    }
+
+    _scheduledPlaybackCount = immediate.length + pending.length;
+    _completedPlaybackCount = 0;
+
+    // Fire play() on immediate players — fire-and-forget so [_startTicker]
+    // can run. In just_audio, play() returns a Future that only completes
+    // when playback ends; awaiting it would freeze the transport clock.
+    debugPrint(
+      'Orpheus Deck: Starting ${immediate.length} immediate just_audio players: '
+      '$immediate (pending=$pending)',
+    );
+    for (final int i in immediate) {
+      try {
+        _trackPlayers[i].play();
+      } catch (e) {
+        debugPrint("Orpheus Deck: play() ERROR TRK $i - $e");
+      }
+      _attachCompletionListenerFor(i);
+    }
+
+    await _tryStartClickPlayback(contextTag: 'play');
+
+    _startTicker();
+    debugPrint(
+      'Orpheus Deck: PLAY_TRANSPORT_START '
+      'tapeLengthMs=$tapeLengthMs playbackMs=$_playbackMs '
+      'contentMaxMs=${_getMaxPlaybackDuration()} '
+      'immediate=${immediate.length} pending=${pending.length}',
+    );
   }
 
-  /// Subscribe to each active player's processingStateStream.
-  /// When ALL active players reach [ProcessingState.completed], trigger _stop()
-  /// so the UI never stays stuck in PLAY mode after natural playback end.
-  void _attachPlayerCompletionListeners(List<int> activeIndices) {
-    // Cancel any existing subscriptions first.
+  /// Resets the per-PLAY completion counters and clears any prior listeners.
+  /// Must run before [_attachCompletionListenerFor] is called for a new
+  /// playback session, otherwise stale counters can fire auto-stop early.
+  void _resetCompletionTracking() {
     for (int i = 0; i < 4; i++) {
       _playerCompletionSubs[i]?.cancel();
       _playerCompletionSubs[i] = null;
     }
-    if (activeIndices.isEmpty) return;
+    _scheduledPlaybackCount = 0;
+    _completedPlaybackCount = 0;
+  }
 
-    // Track how many players have finished.
-    int completedCount = 0;
-    final int total = activeIndices.length;
-
-    for (int i in activeIndices) {
-      _playerCompletionSubs[i] =
-          _trackPlayers[i].processingStateStream.listen((state) {
-        if (state == ja.ProcessingState.completed) {
-          debugPrint('Orpheus Deck: TRK $i reached ProcessingState.completed');
-          completedCount++;
-          if (completedCount >= total && _isPlaying && !_isRecording) {
-            debugPrint(
-                'Orpheus Deck: All $total active players completed — auto-stopping');
-            _stop(transportStopReason: 'ALL_PLAYERS_COMPLETE');
-          }
-        }
-      });
-    }
+  /// Subscribes to one player's processingStateStream.
+  ///
+  /// During PLAY: when the scheduled player count (immediate + delayed-
+  /// promoted) has all completed, _stop() fires so the UI never stays stuck
+  /// in PLAY mode after natural end.
+  ///
+  /// During RECORD/overdub: a backing track finishing must NOT stop the
+  /// recorder — the user controls when recording ends. The listener just
+  /// logs and exits early so the recorder keeps going until STOP/tape end.
+  void _attachCompletionListenerFor(int i) {
+    _playerCompletionSubs[i]?.cancel();
+    _playerCompletionSubs[i] =
+        _trackPlayers[i].processingStateStream.listen((state) {
+      if (state != ja.ProcessingState.completed) return;
+      if (_isRecording) {
+        debugPrint(
+          'Orpheus Deck: REC BACKING TRK $i completed '
+          '(recorder continues) playbackMs=$_playbackMs',
+        );
+        return;
+      }
+      debugPrint('Orpheus Deck: TRK $i reached ProcessingState.completed');
+      _completedPlaybackCount++;
+      if (_scheduledPlaybackCount > 0 &&
+          _completedPlaybackCount >= _scheduledPlaybackCount &&
+          _pendingPlaybackIndices.isEmpty &&
+          _isPlaying &&
+          !_isRecording) {
+        debugPrint(
+            'Orpheus Deck: All $_scheduledPlaybackCount scheduled players completed — auto-stopping');
+        _stop(transportStopReason: 'ALL_PLAYERS_COMPLETE');
+      }
+    });
   }
 
   /// Debug helper: bypass solo/mute and play every non-empty track at full volume.
@@ -3169,45 +3281,101 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
       _updateMixerState();
 
-      // Stop all just_audio track players; backing tracks seek to the tape head.
+      // Stop all just_audio track players; tape-aware seek happens per-track
+      // below, using the same scheduling model as [_play].
       for (var p in _trackPlayers) {
         await p.stop();
       }
 
-      // Prepare overdub backing tracks with just_audio.
-      final List<int> overdubIndices = [];
+      _pendingPlaybackIndices.clear();
+      _resetCompletionTracking();
+
+      debugPrint(
+        'Orpheus Deck: RECORD_START tape head '
+        'armedTrack=$armedIndex recordTapeStartMs=$recordTapeStartMs '
+        'tapeLengthMs=$tapeLengthMs',
+      );
+
+      // Prepare overdub backing tracks: respect trackTapeStartMs so a delayed
+      // backing track waits until the recording head reaches its tape position.
+      final List<int> immediateBacking = [];
+      final List<int> pendingBacking = [];
       for (int i = 0; i < 4; i++) {
-        if (_trackFiles[i] == null || i == armedIndex) continue;
+        if (i == armedIndex) continue;
+        if (_trackFiles[i] == null) continue;
         final file = File(_trackFiles[i]!);
         final bool exists = file.existsSync();
         final int size = exists ? file.lengthSync() : 0;
         final bool audible = _isTrackAudible(i);
         final double vol = audible ? _trackVolumes[i] : 0.0;
+        final int tapeStart = _trackTapeStartMs[i];
+        final int clipDur = _trackContentDurationMs(i);
+        final int tapeEnd = tapeStart + clipDur;
+        final bool past = clipDur > 0 && recordTapeStartMs >= tapeEnd;
+        final bool delayed = recordTapeStartMs < tapeStart;
+        final bool shouldPlayNow = !past && !delayed;
 
         debugPrint(
-            "Orpheus Deck: OVERDUB TRK $i | path: ${_trackFiles[i]} | exists: $exists | size: $size | audible: $audible | vol: $vol");
+          'Orpheus Deck: REC BACKING TRK $i | path: ${_trackFiles[i]} | '
+          'exists=$exists size=$size | '
+          'tapeStart=$tapeStart clipDurMs=$clipDur tapeEnd=$tapeEnd | '
+          'shouldPlayNow=$shouldPlayNow past=$past delayed=$delayed | '
+          'vol=$vol audible=$audible',
+        );
 
         if (!exists || size == 0) continue;
         if (!audible) {
-          debugPrint("Orpheus Deck: OVERDUB TRK $i SKIP - not audible");
+          debugPrint("Orpheus Deck: REC BACKING TRK $i SKIP - not audible");
           continue;
         }
+        if (past) {
+          debugPrint(
+            'Orpheus Deck: REC BACKING TRK $i SKIP - past tapeEnd '
+            '(tapeEnd=$tapeEnd recordTapeStartMs=$recordTapeStartMs)',
+          );
+          continue;
+        }
+
         try {
           await _trackPlayers[i].setFilePath(_trackFiles[i]!);
           await _trackPlayers[i].setVolume(vol);
-          final int cap = _trackContentDurationMs(i);
-          final int seekMs =
-              cap > 0 ? min(recordTapeStartMs, cap) : recordTapeStartMs;
-          await _trackPlayers[i].seek(Duration(milliseconds: seekMs));
           debugPrint(
-              "Orpheus Deck: OVERDUB TRK $i setFilePath OK | state: ${_trackPlayers[i].processingState}");
-          debugPrint(
-              'Orpheus Deck: OVERDUB SEEK armedTrack=$armedIndex backingTrack=$i recordTapeStartMs=$recordTapeStartMs seekMs=$seekMs capMs=$cap');
-          overdubIndices.add(i);
+              "Orpheus Deck: REC BACKING TRK $i setFilePath OK | state: ${_trackPlayers[i].processingState}");
         } catch (e) {
-          debugPrint("Orpheus Deck: OVERDUB TRK $i prepare/seek ERROR - $e");
+          debugPrint("Orpheus Deck: REC BACKING TRK $i prepare ERROR - $e");
+          continue;
+        }
+
+        if (shouldPlayNow) {
+          final int seekMs =
+              (recordTapeStartMs - tapeStart).clamp(0, clipDur);
+          try {
+            await _trackPlayers[i].seek(Duration(milliseconds: seekMs));
+          } catch (e) {
+            debugPrint('Orpheus Deck: REC BACKING TRK $i seek err $e');
+          }
+          immediateBacking.add(i);
+          debugPrint(
+            'Orpheus Deck: REC BACKING TRK $i SCHEDULED=IMMEDIATE '
+            'seekMs=$seekMs tapeStart=$tapeStart tapeEnd=$tapeEnd',
+          );
+        } else {
+          try {
+            await _trackPlayers[i].seek(Duration.zero);
+          } catch (e) {
+            debugPrint('Orpheus Deck: REC BACKING TRK $i seek err $e');
+          }
+          _pendingPlaybackIndices.add(i);
+          pendingBacking.add(i);
+          debugPrint(
+            'Orpheus Deck: REC BACKING TRK $i SCHEDULED=PENDING '
+            'tapeStart=$tapeStart tapeEnd=$tapeEnd',
+          );
         }
       }
+
+      _scheduledPlaybackCount = immediateBacking.length + pendingBacking.length;
+      _completedPlaybackCount = 0;
 
       // ── OVERDUB LAUNCH (FIXED SEQUENCING) ────────────────────────────────
       // Strategy:
@@ -3258,13 +3426,20 @@ class _RecorderScreenState extends State<RecorderScreen> {
         return;
       }
 
-      // B. Start backing playback immediately after recorder confirms
-      if (overdubIndices.isNotEmpty) {
-        debugPrint("Orpheus Deck: Starting ${overdubIndices.length} backing players");
+      // B. Start backing playback immediately after recorder confirms.
+      // Pending backing tracks stay paused until the ticker promotes them
+      // inside [_maybeStartPendingTracks] once the recording head reaches
+      // their tapeStart.
+      if (immediateBacking.isNotEmpty) {
+        debugPrint(
+          'Orpheus Deck: Starting ${immediateBacking.length} immediate '
+          'backing players $immediateBacking (pending=$pendingBacking)',
+        );
         // We do NOT await the futures here, just fire and forget so they play
         // while the recorder is running.
-        for (int i in overdubIndices) {
+        for (int i in immediateBacking) {
           _trackPlayers[i].play();
+          _attachCompletionListenerFor(i);
         }
       }
 
@@ -3416,6 +3591,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
     await _stopClickPlayback();
 
     _tickerTimer?.cancel();
+
+    _pendingPlaybackIndices.clear();
+    _resetCompletionTracking();
 
     setState(() {
       _isPlaying = false;
