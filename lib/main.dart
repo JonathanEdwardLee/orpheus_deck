@@ -2171,29 +2171,59 @@ class _RecorderScreenState extends State<RecorderScreen> {
       final tempId = DateTime.now().millisecondsSinceEpoch;
       final outPath = '${tempDir.path}/orpheus_exp_$tempId.wav';
 
-      List<String> inputs = [];
-      List<String> filterParts = [];
-      List<double> targetVolList = [];
+      final List<String> inputs = [];
+      final List<String> filterParts = [];
+      final List<int> trackDelayMs = [];
+      final List<int> trackIdxs = [];
+      final List<double> targetVolList = [];
       int activeCount = 0;
+      int expectedDurationMs = 0;
 
-      bool anySolo = _trackSolos.contains(true);
+      final bool anySolo = _trackSolos.contains(true);
 
       for (int i = 0; i < 4; i++) {
-        if (_trackFiles[i] != null && File(_trackFiles[i]!).existsSync()) {
-          double targetVol = 0.0;
-          if (anySolo) {
-            if (_trackSolos[i] && !_trackMutes[i]) targetVol = _trackVolumes[i];
-          } else {
-            if (!_trackMutes[i]) targetVol = _trackVolumes[i];
-          }
+        final String? path = _trackFiles[i];
+        final bool exists = path != null && File(path).existsSync();
+        final int tapeStart = _trackTapeStartMs[i];
+        final int clipDur = _trackContentDurationMs(i);
+        final int tapeEnd = tapeStart + clipDur;
 
-          if (targetVol > 0.01) {
-            inputs.add("-i");
-            inputs.add(_trackFiles[i]!);
-            targetVolList.add(targetVol);
-            activeCount++;
+        double targetVol = 0.0;
+        String skipReason = '';
+        if (!exists) {
+          skipReason = 'NO_FILE';
+        } else if (anySolo) {
+          if (_trackSolos[i] && !_trackMutes[i]) {
+            targetVol = _trackVolumes[i];
           }
+          if (targetVol <= 0.01) {
+            skipReason = _trackSolos[i] ? 'MUTED_OR_ZERO_VOL' : 'NOT_SOLOED';
+          }
+        } else {
+          if (!_trackMutes[i]) targetVol = _trackVolumes[i];
+          if (targetVol <= 0.01) skipReason = 'MUTED_OR_ZERO_VOL';
         }
+
+        final bool included = exists && targetVol > 0.01;
+
+        debugPrint(
+          'Orpheus Deck: EXPORT TRK $i '
+          'path=${path ?? "<none>"} '
+          'tapeStartMs=$tapeStart clipDurMs=$clipDur tapeEndMs=$tapeEnd '
+          'solo=${_trackSolos[i]} mute=${_trackMutes[i]} '
+          'vol=${_trackVolumes[i]} anySolo=$anySolo '
+          'included=$included${included ? '' : ' skipReason=$skipReason'}',
+        );
+
+        if (!included) continue;
+
+        inputs.add("-i");
+        inputs.add(path);
+        trackDelayMs.add(tapeStart);
+        trackIdxs.add(i);
+        targetVolList.add(targetVol);
+        if (tapeEnd > expectedDurationMs) expectedDurationMs = tapeEnd;
+        activeCount++;
       }
 
       if (activeCount == 0) {
@@ -2202,20 +2232,33 @@ class _RecorderScreenState extends State<RecorderScreen> {
         return;
       }
 
-      for (int i = 0; i < activeCount; i++) {
-        filterParts.add("[$i:a]volume=${targetVolList[i]}[a$i]");
+      // Per-track stage: apply tape-position delay (silence prefix) then per-
+      // track volume. adelay pads silence at the START of the stream so each
+      // recording lands at its trackTapeStartMs in the final mix.
+      for (int j = 0; j < activeCount; j++) {
+        final int delayMs = trackDelayMs[j];
+        final double vol = targetVolList[j];
+        if (delayMs > 0) {
+          filterParts.add('[$j:a]adelay=$delayMs:all=1,volume=$vol[a$j]');
+        } else {
+          filterParts.add('[$j:a]volume=$vol[a$j]');
+        }
       }
 
       String filterGraph = filterParts.join(";");
       String outPad = "[a0]";
 
       if (activeCount > 1) {
-        String mixInputs = "";
-        for (int i = 0; i < activeCount; i++) {
-          mixInputs += "[a$i]";
-        }
+        // amix with normalize=0 sums inputs straight (no 1/N scaling and no
+        // dropout-transition gain bumps when one delayed track ends earlier
+        // than another). duration=longest guarantees the output runs until
+        // the last audible track's tape end.
+        final String mixInputs = List<String>.generate(
+          activeCount,
+          (j) => "[a$j]",
+        ).join();
         filterGraph +=
-            ";${mixInputs}amix=inputs=$activeCount:duration=longest,volume=$activeCount[mix]";
+            ';${mixInputs}amix=inputs=$activeCount:duration=longest:normalize=0[mix]';
         outPad = "[mix]";
       }
 
@@ -2224,7 +2267,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
         outPad = "[master]";
       }
 
-      List<String> command = [
+      final List<String> command = [
         ...inputs,
         "-filter_complex",
         filterGraph,
@@ -2248,6 +2291,13 @@ class _RecorderScreenState extends State<RecorderScreen> {
               ? '"${a.replaceAll('"', r'\"')}"'
               : a)
           .join(' ');
+      debugPrint(
+        'Orpheus Deck: EXPORT SUMMARY isMaster=$isMasterMix '
+        'activeCount=$activeCount activeTracks=$trackIdxs '
+        'delaysMs=$trackDelayMs vols=$targetVolList '
+        'expectedDurationMs=$expectedDurationMs tapeLengthMs=$tapeLengthMs',
+      );
+      debugPrint('Orpheus Deck: EXPORT filter chain: $filterGraph');
       debugPrint('Orpheus Deck: FFmpeg full command: ffmpeg $cmdLogged');
 
       FFmpegKit.executeWithArgumentsAsync(command, (session) async {
@@ -2274,8 +2324,15 @@ class _RecorderScreenState extends State<RecorderScreen> {
           }
 
           final ver = await _verifyExportedWav(outPath);
+          int outBytes = -1;
+          try {
+            final outFile = File(outPath);
+            if (outFile.existsSync()) outBytes = outFile.lengthSync();
+          } catch (_) {}
           debugPrint(
-              'Orpheus Deck: export verify ok=${ver.ok} detail=${ver.detail} duration=${ver.durationSec ?? "?"}');
+              'Orpheus Deck: EXPORT result ok=${ver.ok} detail=${ver.detail} '
+              'duration=${ver.durationSec ?? "?"} bytes=$outBytes '
+              'expectedDurationMs=$expectedDurationMs');
 
           if (!ver.ok) {
             await _deleteExportIfExists(outPath);
