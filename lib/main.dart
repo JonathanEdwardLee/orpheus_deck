@@ -178,6 +178,7 @@ class UndoState {
   int? trackIndex;
   String? trackFile;
   List<double>? trackWaveform;
+  int? trackTapeStartMs;
 
   List<double>? volumes;
   List<bool>? mutes;
@@ -191,6 +192,7 @@ class UndoState {
     trackIndex = null;
     trackFile = null;
     trackWaveform = null;
+    trackTapeStartMs = null;
     volumes = null;
     mutes = null;
     solos = null;
@@ -305,6 +307,7 @@ class Session {
   Map<String, List<double>> waveformCache;
   List<String?> trackIds;
   List<int> trackOffsets;
+  List<int> trackTapeStartMs;
   List<double> trackVolumes;
   List<bool> trackMutes;
   List<bool> trackSolos;
@@ -321,6 +324,7 @@ class Session {
     required this.waveformCache,
     required this.trackIds,
     required this.trackOffsets,
+    required this.trackTapeStartMs,
     required this.trackVolumes,
     required this.trackMutes,
     required this.trackSolos,
@@ -339,6 +343,7 @@ class Session {
       'waveformCache': waveformCache,
       'trackIds': trackIds,
       'trackOffsets': trackOffsets,
+      'trackTapeStartMs': trackTapeStartMs,
       'trackVolumes': trackVolumes,
       'trackMutes': trackMutes,
       'trackSolos': trackSolos,
@@ -366,6 +371,8 @@ class Session {
           json['trackIds'] as List? ?? [null, null, null, null]),
       trackOffsets:
           List<int>.from(json['trackOffsets'] as List? ?? [0, 0, 0, 0]),
+      trackTapeStartMs: List<int>.from(
+          json['trackTapeStartMs'] as List? ?? [0, 0, 0, 0]),
       trackVolumes: List<double>.from(
           json['trackVolumes'] as List? ?? [1.0, 1.0, 1.0, 1.0]),
       trackMutes: List<bool>.from(
@@ -1156,6 +1163,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     0,
     0
   ]; // ms offset per track (measured at overdub start)
+  final List<int> _trackTapeStartMs = [0, 0, 0, 0];
   final List<double> _trackVolumes = [1.0, 1.0, 1.0, 1.0];
   final List<bool> _trackMutes = [false, false, false, false];
   final List<bool> _trackSolos = [false, false, false, false];
@@ -1191,6 +1199,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
   double _playbackProgress = 0.0;
   int _playbackMs = 0;
+  int? _activeRecordTapeStartMs;
 
   /// Drives the header tape clock — updated with [_playbackMs] so the display
   /// always repaints every transport tick (playback as well as idle seek).
@@ -1461,7 +1470,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _showSnackbar('CLICK DISABLED: AUDIO CONFLICT');
   }
 
-  Future<void> _tryStartClickPlayback({required String contextTag}) async {
+  Future<void> _tryStartClickPlayback({required String contextTag, int? seekMs}) async {
     if (!_metronomeOn) return;
     final bool showBuild =
         contextTag == 'play' || contextTag == 'record';
@@ -1476,10 +1485,13 @@ class _RecorderScreenState extends State<RecorderScreen> {
         _clickPlayerSourcePath = path;
       }
       await _clickPlayer.setVolume(1.0);
-      await _clickPlayer.seek(Duration(milliseconds: _playbackMs));
+      final int clickSeekMs = (seekMs ?? _playbackMs).clamp(0, tapeLengthMs);
+      await _clickPlayer.seek(Duration(milliseconds: clickSeekMs));
+      debugPrint(
+          'Orpheus Deck: CLICK seek ctx=$contextTag seekMs=$clickSeekMs');
       await _clickPlayer.play();
       debugPrint(
-          'Orpheus Deck: CLICK player START ctx=$contextTag posMs=$_playbackMs '
+          'Orpheus Deck: CLICK player START ctx=$contextTag posMs=$clickSeekMs '
           'bpm=$_bpm sound=$_metronomeSound recording=$_isRecording playing=$_isPlaying path=$path');
     } catch (e, st) {
       debugPrint(
@@ -1578,6 +1590,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
     for (int i = 0; i < 4; i++) {
       _trackFiles[i] = null;
       _armedTracks[i] = false;
+      _trackOffsets[i] = 0;
+      _trackTapeStartMs[i] = 0;
       _trackVolumes[i] = 1.0;
       _trackMutes[i] = false;
       _trackSolos[i] = false;
@@ -1626,6 +1640,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
           for (int i = 0; i < 4; i++) {
             _trackFiles[i] = session.trackFiles[i];
             _trackOffsets[i] = session.trackOffsets[i];
+            _trackTapeStartMs[i] = session.trackTapeStartMs[i];
             _trackVolumes[i] = session.trackVolumes[i];
             _trackMutes[i] = session.trackMutes[i];
             _trackSolos[i] = session.trackSolos[i];
@@ -1661,6 +1676,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
         waveformCache: _waveformCache,
         trackIds: [null, null, null, null],
         trackOffsets: List<int>.from(_trackOffsets),
+        trackTapeStartMs: List<int>.from(_trackTapeStartMs),
         trackVolumes: _trackVolumes,
         trackMutes: _trackMutes,
         trackSolos: _trackSolos,
@@ -1707,6 +1723,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
         trash.renameSync(file);
         setState(() {
           _trackFiles[idx] = file;
+          _trackTapeStartMs[idx] = _lastUndo.trackTapeStartMs ?? 0;
           if (_lastUndo.trackWaveform != null) {
             _waveformCache[file] = _lastUndo.trackWaveform!;
           }
@@ -3118,6 +3135,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
 
     int armedIndex = _armedTracks.indexOf(true);
+    final int recordTapeStartMs = _playbackMs.clamp(0, tapeLengthMs);
+    debugPrint(
+        'Orpheus Deck: RECORD_TAPE_START armedTrack=$armedIndex recordTapeStartMs=$recordTapeStartMs playbackMs=$_playbackMs');
 
     if (_trackFiles[armedIndex] != null) {
       _showSnackbar('ERR: TRACK FULL. CLEAR FIRST.');
@@ -3137,6 +3157,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
 
     if (await _recorder.hasPermission()) {
+      _activeRecordTapeStartMs = recordTapeStartMs;
       final dir = await getApplicationDocumentsDirectory();
       final projDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
       if (!await projDir.exists()) {
@@ -3148,10 +3169,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
       _updateMixerState();
 
-      // Stop all just_audio track players and reset position.
+      // Stop all just_audio track players; backing tracks seek to the tape head.
       for (var p in _trackPlayers) {
         await p.stop();
-        await p.seek(Duration.zero);
       }
 
       // Prepare overdub backing tracks with just_audio.
@@ -3175,17 +3195,23 @@ class _RecorderScreenState extends State<RecorderScreen> {
         try {
           await _trackPlayers[i].setFilePath(_trackFiles[i]!);
           await _trackPlayers[i].setVolume(vol);
+          final int cap = _trackContentDurationMs(i);
+          final int seekMs =
+              cap > 0 ? min(recordTapeStartMs, cap) : recordTapeStartMs;
+          await _trackPlayers[i].seek(Duration(milliseconds: seekMs));
           debugPrint(
               "Orpheus Deck: OVERDUB TRK $i setFilePath OK | state: ${_trackPlayers[i].processingState}");
+          debugPrint(
+              'Orpheus Deck: OVERDUB SEEK armedTrack=$armedIndex backingTrack=$i recordTapeStartMs=$recordTapeStartMs seekMs=$seekMs capMs=$cap');
           overdubIndices.add(i);
         } catch (e) {
-          debugPrint("Orpheus Deck: OVERDUB TRK $i setFilePath ERROR - $e");
+          debugPrint("Orpheus Deck: OVERDUB TRK $i prepare/seek ERROR - $e");
         }
       }
 
       // ── OVERDUB LAUNCH (FIXED SEQUENCING) ────────────────────────────────
       // Strategy:
-      // 1. Prepare backing players (seek zero, set volume).
+      // 1. Prepare backing players (seek to tape head, set volume).
       // 2. Start recorder and WAIT for confirmation.
       // 3. Immediately start backing playback without awaiting it to finish.
       //
@@ -3222,6 +3248,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
         debugPrint(
             "Orpheus Deck: Recorder start ERROR $e\n$st");
         sw.stop();
+        _activeRecordTapeStartMs = null;
         final int cm = _getMaxPlaybackDuration();
         debugPrint(
           'Orpheus Deck: TRANSPORT_STOP reason=RECORDER_ERROR '
@@ -3242,7 +3269,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
       }
 
       if (_metronomeOn) {
-        unawaited(_tryStartClickPlayback(contextTag: 'record'));
+        unawaited(_tryStartClickPlayback(
+          contextTag: 'record',
+          seekMs: recordTapeStartMs,
+        ));
       }
 
       sw.stop();
@@ -3298,10 +3328,11 @@ class _RecorderScreenState extends State<RecorderScreen> {
       setState(() {
         _isRecording = true;
         _isPlaying = true;
-        _applyTapeHeadClamped(0);
+        _applyTapeHeadClamped(recordTapeStartMs);
       });
       debugPrint(
         'Orpheus Deck: RECORD_TRANSPORT_START '
+        'armedTrack=$armedIndex recordTapeStartMs=$recordTapeStartMs '
         'tapeLengthMs=$tapeLengthMs playbackMs=$_playbackMs '
         'contentMaxMs=${_getMaxPlaybackDuration()}',
       );
@@ -3354,12 +3385,17 @@ class _RecorderScreenState extends State<RecorderScreen> {
           if (fileSize > 0 &&
               _liveAmplitudes.isNotEmpty &&
               _liveAmplitudes.any((a) => a > 0.03)) {
+            final int savedTapeStartMs = _activeRecordTapeStartMs ?? 0;
             setState(() {
               _trackFiles[armedIndex] = path;
               _waveformCache[path] = List.from(_liveAmplitudes);
+              _trackTapeStartMs[armedIndex] = savedTapeStartMs;
               _armedTracks[armedIndex] = false;
               recordedSomething = true;
             });
+            debugPrint(
+                'Orpheus Deck: RECORD_SAVE armedTrack=$armedIndex '
+                'recordTapeStartMs=$savedTapeStartMs fileSize=$fileSize path=$path');
           } else {
             debugPrint("Orpheus Deck: Ignored silent/empty recording.");
             if (file.existsSync()) file.deleteSync();
@@ -3369,6 +3405,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
           }
         }
       }
+      _activeRecordTapeStartMs = null;
       _liveAmplitudes.clear();
     }
 
@@ -3443,6 +3480,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _lastUndo.trackIndex = index;
     _lastUndo.trackFile = filePath;
     _lastUndo.trackWaveform = _waveformCache[filePath];
+    _lastUndo.trackTapeStartMs = _trackTapeStartMs[index];
 
     // 3. Rename the file to .trash (recoverable undo target).
     final File file = File(filePath);
@@ -3471,6 +3509,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
       _waveformCache.remove(filePath);
       _trackFiles[index] = null;
       _trackOffsets[index] = 0;
+      _trackTapeStartMs[index] = 0;
     });
 
     debugPrint(
