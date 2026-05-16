@@ -1,5 +1,8 @@
 import 'orpheus_native_bindings.dart';
 import 'orpheus_native_duplex_bindings.dart';
+import 'orpheus_native_latency_profile.dart';
+import 'orpheus_native_n3_bindings.dart';
+import 'orpheus_native_n3c_bindings.dart';
 
 /// Oboe 1.10 enum labels (see oboe/Definitions.h).
 class OrpheusNativeLabels {
@@ -230,5 +233,120 @@ class OrpheusNativeLabels {
       buf.writeln('click ${i + 1} offset $off samples (residual $res)');
     }
     return buf.toString().trimRight();
+  }
+
+  /// N2E multi-pass profile block (engineering — not saved to main recorder).
+  static String formatLatencyProfile(OrpheusLatencyProfileResult p) {
+    final buf = StringBuffer('N2E CALIBRATION PROFILE\n');
+    buf.writeln('RUNS GOOD: ${p.goodPassCount} / ${p.totalRuns}');
+
+    if (!p.profileSuccess) {
+      buf.writeln('PROFILE: FAILED');
+      if (p.failureMessage != null) {
+        buf.writeln(p.failureMessage);
+      }
+      buf.writeln('QUALITY: ${p.qualityLabel}');
+      buf.writeln(_n2eInstructions);
+      return buf.toString().trimRight();
+    }
+
+    final ms = p.recommendedOffsetMs ?? 0;
+    buf.writeln(
+      'RECOMMENDED OFFSET: ${p.recommendedOffsetSamples} SAMPLES / '
+      '${ms.toStringAsFixed(1)} MS',
+    );
+    buf.writeln('PROFILE SPREAD: ${p.profileSpreadSamples} SAMPLES');
+    buf.writeln('QUALITY: ${p.qualityLabel}');
+    buf.writeln('PROFILE CONFIDENCE: ${p.profileQualityPercent}%');
+    buf.writeln(
+      '${OrpheusLatencyProfileResult.devOnlyFieldName}: '
+      '${p.recommendedOffsetSamples}',
+    );
+    buf.writeln(_n2eInstructions);
+    return buf.toString().trimRight();
+  }
+
+  static const String _n2eInstructions =
+      'USE PHONE SPEAKER.\n'
+      'VOLUME UP.\n'
+      'KEEP PHONE STILL.\n'
+      'RUN AGAIN IF THE VALUE CHANGES A LOT.';
+
+  static String formatN2ePassSummary(OrpheusN2ePassRecord pass) {
+    final d = pass.diagnostics;
+    final status = pass.isGood ? 'GOOD' : 'REJECTED';
+    final detail = pass.isGood
+        ? 'offset=${d.medianOffsetSamples} spread=${d.spreadSamples}'
+        : (pass.rejectReason ?? 'unknown');
+    return 'Run ${pass.runIndex}: $status — $detail';
+  }
+
+  static String formatN3cOverdub(OrpheusN3OverdubDiagnosticsData d) {
+    if (!d.diagnosticsPlausible) {
+      return 'N3C OVERDUB TEST\n'
+          'N3C DIAGNOSTICS INVALID\n'
+          '(check @Packed(8) FFI layout)\n'
+          'RAW frames=${d.backingWavTotalFrames} transport=${d.currentTransportSample}';
+    }
+    const devDefault = 2900;
+    final offsetLabel = d.defaultRecordLatencyOffsetSamples == devDefault
+        ? 'DEV DEFAULT ONLY'
+        : 'FROM N2E PROFILE (dev memory)';
+    return 'N3C OVERDUB TEST\n'
+        'BACKING: ${d.backingWavTotalFrames} frames @ ${d.sampleRate} Hz\n'
+        'RECORD START: ${d.recordStartSample} samples\n'
+        'defaultRecordLatencyOffsetSamples: '
+        '${d.defaultRecordLatencyOffsetSamples} ($offsetLabel)\n'
+        'effectiveRecordStartSample: ${d.effectiveRecordStartSample}\n'
+        'TRANSPORT: ${d.currentTransportSample} samples '
+        '(${d.transportSeconds.toStringAsFixed(2)} s)\n'
+        'RECORDED: ${d.recordedFramesWritten} frames\n'
+        'PLAYBACK COMPLETE: ${d.playbackComplete == 1 ? 'YES' : 'NO'}\n'
+        'RECORD SUCCESS: ${d.recordSuccess == 1 ? 'YES' : 'NO'}\n'
+        'WAV WRITE: ${d.wavWriteSuccess == 1 ? 'YES' : 'NO'}\n'
+        'XRUNS: ${d.xRunCount}\n'
+        'API: ${apiUsed(d.apiUsed)} | ${performanceMode(d.performanceMode)} | '
+        '${sharingMode(d.sharingMode)}\n'
+        'ALIGNMENT PROOF (recorded mic):\n'
+        'CLICKS: ${d.clicksDetected} / ${d.clicksExpected}\n'
+        'MEDIAN OFFSET: ${d.medianOffsetSamples} samples / '
+        '${d.medianOffsetMs.toStringAsFixed(1)} ms\n'
+        'RESIDUAL AFTER COMP: ${d.compensatedMedianResidualSamples} samples / '
+        '${d.compensatedResidualMs.toStringAsFixed(1)} ms\n'
+        'COMP PASS: ${d.compensatedAlignmentSuccess == 1 ? 'YES' : 'NO'} '
+        '(${d.compensatedQualityPercent}%)';
+  }
+
+  static String formatN3bPlayback(OrpheusN3PlaybackDiagnosticsData d) {
+    if (!d.diagnosticsPlausible) {
+      return 'N3B ONE-TRACK PLAYBACK\n'
+          'N3B DIAGNOSTICS INVALID\n'
+          '(FFI struct mismatch or uninitialized — check @Packed(8) / C layout)\n'
+          'RAW: wavFrames=${d.wavTotalFrames} transport=${d.currentTransportSample} '
+          'callbacks=${d.outputCallbackCount}';
+    }
+    return 'N3B ONE-TRACK PLAYBACK\n'
+        'WAV: ${d.wavSampleRate} Hz / ${d.wavChannels} ch / '
+        '${d.wavTotalFrames} frames '
+        '(${d.wavDurationSeconds.toStringAsFixed(1)} s)\n'
+        'TRANSPORT: ${d.currentTransportSample} samples '
+        '(${d.transportSeconds.toStringAsFixed(2)} s)\n'
+        'RANGE: ${d.playbackStartSample} … ${d.playbackStopSample}\n'
+        'PLAYING: ${d.isPlaying == 1 ? 'YES' : 'NO'}\n'
+        'COMPLETE: ${d.playbackComplete == 1 ? 'YES' : 'NO'}\n'
+        'XRUNS: ${d.xRunCount}\n'
+        'API: ${apiUsed(d.apiUsed)} | '
+        '${performanceMode(d.performanceMode)} | '
+        '${sharingMode(d.sharingMode)}\n'
+        'BURST / BUFFER: ${d.framesPerBurst} / ${d.bufferSizeInFrames}\n'
+        'OUTPUT CALLBACKS: ${d.outputCallbackCount}';
+  }
+
+  static String copyRecommendedOffsetLine(OrpheusLatencyProfileResult p) {
+    if (!p.profileSuccess || p.recommendedOffsetSamples == null) {
+      return '';
+    }
+    return '${OrpheusLatencyProfileResult.devOnlyFieldName}='
+        '${p.recommendedOffsetSamples}';
   }
 }

@@ -212,17 +212,38 @@ Success criteria:
 - xrun count is reported
 - Flutter UI remains responsive
 
-### Phase N2 — Full Duplex Overdub Prototype
+### Phase N2 — Full Duplex Overdub Prototype (complete)
 
 Goal:
 
 Prove native engine can play backing audio and record mic simultaneously with tighter alignment than the Flutter plugin path.
+
+N2B timing analysis, N2C display, N2D compensation proof, and N2E profile selection are implemented on the dev Native Audio Test screen.
+
+### Phase N2E — Latency Profile Selection (complete)
+
+Multi-pass N2B/N2D calibration chooses `defaultRecordLatencyOffsetSamples` (median of good passes). Dev-only; not wired to main recorder.
+
+Observed phone target: ~2900 samples @ 48 kHz (~60 ms) until per-route profiles exist.
 
 ### Phase N3 — Native Four-Track Engine
 
 Goal:
 
 Native engine owns four-track playback, one mic record input, click guide, sample-accurate transport, mixer, and latency compensation.
+
+**Full architecture, FFI API, data model, migration, risks, and subphases:** see **[N3_ARCHITECTURE.md](N3_ARCHITECTURE.md)**.
+
+| Subphase | Summary |
+|----------|---------|
+| **N3A** | Architecture report (this planning doc) |
+| **N3B** | One-track WAV playback + transport (dev only) |
+| **N3C** | One-track playback + mic overdub to WAV |
+| **N3D** | Four-track WAV mixer test |
+| **N3E** | Hidden native recorder mode → real UI (parallel to legacy) |
+| **N3F** | Session metadata + M4A→WAV migration helper |
+
+**Next implementation:** N3B (do not replace main recorder until N3E checklist passes).
 
 ### Phase N4 — Export Alignment
 

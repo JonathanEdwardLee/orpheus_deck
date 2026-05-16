@@ -107,8 +107,85 @@ typedef struct OrpheusDuplexDiagnostics {
     int64_t perClickResidual5;
 } OrpheusDuplexDiagnostics;
 
+/**
+ * Phase N3B one-track WAV playback diagnostics — strict C struct for FFI.
+ * Dart mirror MUST use @Packed(8) (int64_t aligns to 8 after int32 block).
+ */
+typedef struct OrpheusN3PlaybackDiagnostics {
+    int32_t sampleRate;
+    int32_t framesPerBurst;
+    int32_t bufferSizeInFrames;
+    int32_t xRunCount;
+    int32_t apiUsed;
+    int32_t performanceMode;
+    int32_t sharingMode;
+    int32_t outputStreamOpened;
+    int32_t wavLoadSuccess;
+    int32_t wavSampleRate;
+    int32_t wavChannels;
+    int32_t playbackComplete;
+    int32_t isPlaying;
+    int32_t errorCode;
+    int32_t exclusiveAttempted;
+    int32_t sharedFallbackUsed;
+    int32_t _paddingForInt64Align;
+
+    int64_t wavTotalFrames;
+    int64_t playbackStartSample;
+    int64_t playbackStopSample;
+    int64_t currentTransportSample;
+    int64_t outputCallbackCount;
+} OrpheusN3PlaybackDiagnostics;
+
+/**
+ * Phase N3C one-track overdub diagnostics — Dart mirror MUST use @Packed(8).
+ */
+typedef struct OrpheusN3OverdubDiagnostics {
+    int32_t sampleRate;
+    int32_t framesPerBurst;
+    int32_t bufferSizeInFrames;
+    int32_t xRunCount;
+    int32_t apiUsed;
+    int32_t performanceMode;
+    int32_t sharingMode;
+    int32_t inputStreamOpened;
+    int32_t outputStreamOpened;
+    int32_t backingWavLoadSuccess;
+    int32_t wavWriteSuccess;
+    int32_t playbackComplete;
+    int32_t recordSuccess;
+    int32_t errorCode;
+    int32_t exclusiveAttempted;
+    int32_t sharedFallbackUsed;
+    int32_t analysisSuccess;
+    int32_t compensatedAlignmentSuccess;
+    int32_t clicksDetected;
+    int32_t clicksExpected;
+    int32_t confidencePercent;
+    int32_t medianOffsetMsTimes1000;
+    int32_t compensatedQualityPercent;
+    int32_t _paddingForInt64Align;
+
+    int64_t backingWavTotalFrames;
+    int64_t backingStartSample;
+    int64_t recordStartSample;
+    int64_t defaultRecordLatencyOffsetSamples;
+    int64_t effectiveRecordStartSample;
+    int64_t recordedFramesWritten;
+    int64_t currentTransportSample;
+    int64_t transportStopSample;
+    int64_t outputCallbackCount;
+    int64_t inputCallbackCount;
+    int64_t medianOffsetSamples;
+    int64_t compensatedMedianResidualSamples;
+} OrpheusN3OverdubDiagnostics;
+
 #ifdef __cplusplus
 }
+static_assert(sizeof(OrpheusN3PlaybackDiagnostics) == 112,
+              "OrpheusN3PlaybackDiagnostics size must match Dart @Packed(8)");
+static_assert(sizeof(OrpheusN3OverdubDiagnostics) == 192,
+              "OrpheusN3OverdubDiagnostics size must match Dart @Packed(8)");
 #endif
 
 #endif  // ORPHEUS_AUDIO_TYPES_H_
