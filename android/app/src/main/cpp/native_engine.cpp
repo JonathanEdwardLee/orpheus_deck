@@ -23,9 +23,11 @@ void setError(const std::string& msg) {
 extern "C" {
 
 int32_t orpheus_native_init(void) {
-    if (!gEngine) {
-        gEngine = std::make_unique<orpheus::OboeEngine>();
+    if (gEngine) {
+        gEngine->shutdown();
+        gEngine.reset();
     }
+    gEngine = std::make_unique<orpheus::OboeEngine>();
     if (!gEngine->init()) {
         setError(gEngine->lastError());
         return -1;

@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import 'orpheus_native_bindings.dart';
+import 'orpheus_native_labels.dart';
 
 /// Phase N1 — Oboe handshake orchestration (no main recorder integration).
 class OrpheusNativeAudio {
@@ -90,50 +91,13 @@ class OrpheusNativeAudio {
       }
 
       debugPrint(
-        'Orpheus N1: handshake OK — rate=${diag.sampleRate} '
-        'burst=${diag.framesPerBurst} buf=${diag.bufferSizeInFrames} '
-        'xruns=${diag.xRunCount} api=${diag.apiUsed} '
-        'perf=${diag.performanceMode} sharing=${diag.sharingMode} '
-        'in=${diag.inputStreamOpened} out=${diag.outputStreamOpened} '
-        'wav=${diag.wavWriteSuccess} path=$wavPath',
+        'Orpheus N1: handshake OK — ${OrpheusNativeLabels.formatDiagnosticsSummary(diag)} '
+        'path=$wavPath',
       );
       return diag;
     } finally {
       b.shutdown();
       _bindings = null;
-    }
-  }
-
-  static String apiLabel(int apiUsed) {
-    switch (apiUsed) {
-      case 1:
-        return 'AAudio';
-      case 2:
-        return 'OpenSL ES';
-      default:
-        return 'api=$apiUsed';
-    }
-  }
-
-  static String performanceLabel(int mode) {
-    switch (mode) {
-      case 1:
-        return 'LowLatency';
-      case 2:
-        return 'PowerSaving';
-      default:
-        return 'mode=$mode';
-    }
-  }
-
-  static String sharingLabel(int mode) {
-    switch (mode) {
-      case 1:
-        return 'Shared';
-      case 2:
-        return 'Exclusive';
-      default:
-        return 'sharing=$mode';
     }
   }
 }

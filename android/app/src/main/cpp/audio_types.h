@@ -9,6 +9,7 @@ extern "C" {
 
 /** Mirrors Dart @Packed(4) OrpheusStreamDiagnostics — no JSON over FFI. */
 typedef struct OrpheusStreamDiagnostics {
+    /** Actual output stream (legacy field = actualSampleRate). */
     int32_t sampleRate;
     int32_t framesPerBurst;
     int32_t bufferSizeInFrames;
@@ -19,6 +20,23 @@ typedef struct OrpheusStreamDiagnostics {
     int32_t inputStreamOpened;
     int32_t outputStreamOpened;
     int32_t wavWriteSuccess;
+
+    int32_t requestedSampleRate;
+    int32_t actualSampleRate;
+    int32_t requestedSharingMode;
+    int32_t actualSharingMode;
+    int32_t requestedPerformanceMode;
+    int32_t actualPerformanceMode;
+
+    /** 1 if Exclusive was tried before any Shared fallback. */
+    int32_t exclusiveAttempted;
+    /** 1 if Shared mode was used after Exclusive failed. */
+    int32_t sharedFallbackUsed;
+    /** 1 if setAudioApi was not called (Oboe Unspecified / default selection). */
+    int32_t unspecifiedAudioApi;
+    /** Oboe Result as int when a fallback open failed; 0 if none recorded. */
+    int32_t lastOpenErrorCode;
+    int32_t androidSdkVersion;
 } OrpheusStreamDiagnostics;
 
 #ifdef __cplusplus
