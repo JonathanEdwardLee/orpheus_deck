@@ -24,7 +24,7 @@ struct TimingAnalysisResult {
     int32_t analysisSuccess = 0;
     int32_t analysisFailureReason = 0;
     int32_t confidencePercent = 0;
-    /** medianOffsetSamples * 1000 / sampleRate for UI display only. */
+    /** (medianOffsetSamples * 1_000_000) / sampleRate — Dart divides by 1000 for ms. */
     int32_t medianOffsetMsTimes1000 = 0;
     int64_t medianOffsetSamples = 0;
     int64_t minOffsetSamples = 0;

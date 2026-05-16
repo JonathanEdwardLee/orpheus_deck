@@ -86,7 +86,13 @@ class OrpheusDuplexDiagnosticsData {
   double get recordedDurationSec =>
       sampleRate > 0 ? recordedFramesWritten / sampleRate : 0;
 
-  double get medianOffsetMs => medianOffsetMsTimes1000 / 1000.0;
+  /// Display-only ms; samples remain source of truth.
+  double get medianOffsetMs {
+    if (sampleRate > 0) {
+      return medianOffsetSamples * 1000.0 / sampleRate;
+    }
+    return medianOffsetMsTimes1000 / 1000.0;
+  }
 }
 
 /// Must match OrpheusDuplexDiagnostics in audio_types.h.

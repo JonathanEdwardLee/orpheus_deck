@@ -149,8 +149,8 @@ TimingAnalysisResult analyzeRecordedClickTiming(
     result.maxOffsetSamples = maxOff;
     result.spreadSamples = spread;
     result.recordLatencyOffsetSamples = med;
-    result.medianOffsetMsTimes1000 =
-        static_cast<int32_t>((med * 1000) / sampleRate);
+    result.medianOffsetMsTimes1000 = static_cast<int32_t>(
+        (med * 1000000LL) / static_cast<int64_t>(sampleRate));
 
     if (spread > kMaxSpreadSamples) {
         result.analysisFailureReason = kTimingSpreadTooLarge;

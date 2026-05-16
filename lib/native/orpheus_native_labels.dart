@@ -155,21 +155,36 @@ class OrpheusNativeLabels {
     }
   }
 
+  static String timingQualityLabel(OrpheusDuplexDiagnosticsData d) {
+    if (d.analysisSuccess == 1 &&
+        d.clicksDetected >= 5 &&
+        d.confidencePercent >= 80 &&
+        d.spreadSamples <= 1000) {
+      return 'QUALITY: GOOD';
+    }
+    return 'QUALITY: UNSTABLE';
+  }
+
   /// N2B engineering validation block (not user calibration).
   static String formatTimingAnalysis(OrpheusDuplexDiagnosticsData d) {
+    final quality = timingQualityLabel(d);
     if (d.analysisSuccess != 1) {
-      return 'TIMING ANALYSIS FAILED\n'
+      return '$quality\n'
+          'TIMING ANALYSIS FAILED\n'
           '${timingFailureMessage(d.analysisFailureReason)}\n'
           'CLICKS DETECTED: ${d.clicksDetected} / ${d.clicksExpected}\n'
-          'USE PHONE SPEAKER OR LET THE MIC HEAR THE CLICKS';
+          'USE PHONE SPEAKER. TURN VOLUME UP.\n'
+          'MIC MUST HEAR THE CLICKS.';
     }
-    return 'TIMING ANALYSIS\n'
+    return '$quality\n'
+        'TIMING ANALYSIS\n'
         'CLICKS DETECTED: ${d.clicksDetected} / ${d.clicksExpected}\n'
         'MEDIAN OFFSET: ${d.medianOffsetSamples} SAMPLES / '
         '${d.medianOffsetMs.toStringAsFixed(1)} MS\n'
         'SPREAD: ${d.spreadSamples} SAMPLES '
         '(${d.minOffsetSamples} … ${d.maxOffsetSamples})\n'
         'CONFIDENCE: ${d.confidencePercent}%\n'
-        'recordLatencyOffsetSamples: ${d.recordLatencyOffsetSamples}';
+        'recordLatencyOffsetSamples: ${d.recordLatencyOffsetSamples}\n'
+        'RUN 2–3 TIMES. USE A CONSISTENT VALUE.';
   }
 }

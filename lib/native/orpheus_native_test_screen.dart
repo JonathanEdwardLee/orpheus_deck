@@ -193,24 +193,6 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
             ),
           ),
         ),
-        if (d.analysisSuccess == 1) ...[
-          const SizedBox(height: 8),
-          _summaryLine(
-            'Clicks',
-            '${d.clicksDetected} / ${d.clicksExpected}',
-          ),
-          _summaryLine('Median offset', '${d.medianOffsetSamples} samples'),
-          _summaryLine(
-            'Median offset (display)',
-            '${d.medianOffsetMs.toStringAsFixed(1)} ms',
-          ),
-          _summaryLine('Spread', '${d.spreadSamples} samples'),
-          _summaryLine('Confidence', '${d.confidencePercent}%'),
-          _summaryLine(
-            'recordLatencyOffsetSamples',
-            '${d.recordLatencyOffsetSamples}',
-          ),
-        ],
       ],
     );
   }
@@ -285,8 +267,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
               'Does not affect the main four-track recorder.\n\n'
               'N1 RECORDS A SHORT NATIVE TEST WAV.\n'
               'N2 PLAYS NATIVE CLICK BACKING AND RECORDS MIC AT THE SAME TIME.\n'
-              'N2B MEASURES CLICK ALIGNMENT IN THE RECORDED WAV (ENGINEERING).\n'
-              'USE PHONE SPEAKER SO THE MIC CAN HEAR CLICKS.\n'
+              'N2B MEASURES CLICK ALIGNMENT (ENGINEERING VALIDATION).\n'
               'NEITHER USES YOUR CURRENT PROJECT OR FOUR-TRACK SESSION.',
               style: _mono.copyWith(color: Colors.white54),
             ),
@@ -302,6 +283,26 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
                 style: const TextStyle(
                   fontFamily: 'monospace',
                   fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.white24),
+              ),
+              child: Text(
+                'FOR TIMING ANALYSIS:\n'
+                'USE PHONE SPEAKER.\n'
+                'TURN VOLUME UP.\n'
+                'KEEP ROOM QUIET.\n'
+                'MIC MUST HEAR THE CLICKS.',
+                style: _mono.copyWith(
+                  color: Colors.white54,
+                  fontWeight: FontWeight.bold,
+                  height: 1.45,
                 ),
               ),
             ),
