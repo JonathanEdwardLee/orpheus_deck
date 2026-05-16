@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:open_file/open_file.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -8,6 +9,7 @@ import 'orpheus_native_audio.dart';
 import 'orpheus_native_bindings.dart';
 import 'orpheus_native_duplex_bindings.dart';
 import 'orpheus_native_labels.dart';
+import 'orpheus_native_latency_profile.dart';
 
 /// Hidden Phase N1/N2 dev screen — not linked from normal user flow.
 class OrpheusNativeTestScreen extends StatefulWidget {
@@ -39,6 +41,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
   String _status = 'Ready.';
   OrpheusNativeDiagnosticsData? _n1Diag;
   OrpheusDuplexDiagnosticsData? _n2Diag;
+  OrpheusLatencyProfileResult? _n2eProfile;
 
   Future<void> _runHandshake() async {
     setState(() {
@@ -69,6 +72,71 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
         setState(() => _busy = false);
       }
     }
+  }
+
+  Future<void> _runCalibrationProfile() async {
+    setState(() {
+      _busy = true;
+      _status = 'Running N2E calibration profile (pass 1/3)…';
+      _n2eProfile = null;
+      _showRawDetails = false;
+    });
+    try {
+      final profile = await OrpheusNativeAudio.instance.runCalibrationProfile(
+        onPassStarted: (current, total) {
+          if (!mounted) return;
+          setState(() {
+            _status = 'Running N2E calibration profile (pass $current/$total)…';
+          });
+        },
+      );
+      final lastPass = profile.passes.isNotEmpty
+          ? profile.passes.last.diagnostics
+          : null;
+      if (!mounted) return;
+      setState(() {
+        _n2eProfile = profile;
+        if (lastPass != null) {
+          _n2Diag = lastPass;
+        }
+        if (profile.profileSuccess) {
+          _status =
+              'N2E complete.\n'
+              'Recommended: ${profile.recommendedOffsetSamples} samples '
+              '(${profile.recommendedOffsetMs?.toStringAsFixed(1)} ms).';
+        } else {
+          _status = 'N2E profile failed — see instructions below.';
+        }
+      });
+    } catch (e, st) {
+      debugPrint('Orpheus N2E profile failed: $e\n$st');
+      if (!mounted) return;
+      setState(() {
+        _status = 'N2E failed: $e';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
+  Future<void> _copyRecommendedOffset() async {
+    final line = OrpheusNativeLabels.copyRecommendedOffsetLine(_n2eProfile!);
+    if (line.isEmpty) {
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: line));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Copied dev-only offset line (not applied to main recorder).',
+          style: TextStyle(fontFamily: 'monospace', fontSize: 12),
+        ),
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   Future<void> _runDuplex() async {
@@ -155,6 +223,69 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
         _summaryLine('Sample rate', '${d.actualSampleRate} Hz'),
         _summaryLine('XRuns', '${d.xRunCount}'),
         _summaryLine('Burst / buffer', '${d.framesPerBurst} / ${d.bufferSizeInFrames}'),
+      ],
+    );
+  }
+
+  Color _profileQualityColor(String label) {
+    switch (label) {
+      case 'GOOD':
+        return Colors.greenAccent;
+      case 'OK':
+        return Colors.lightGreenAccent;
+      default:
+        return Colors.orangeAccent;
+    }
+  }
+
+  Widget _buildN2eProfile(OrpheusLatencyProfileResult p) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _sectionTitle('N2E PROFILE'),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.white24),
+            color: Colors.white.withValues(alpha: 0.06),
+          ),
+          child: Text(
+            OrpheusNativeLabels.formatLatencyProfile(p),
+            style: _mono.copyWith(
+              color: _profileQualityColor(p.qualityLabel),
+              fontWeight: FontWeight.bold,
+              height: 1.45,
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        ...p.passes.map(
+          (pass) => Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(
+              OrpheusNativeLabels.formatN2ePassSummary(pass),
+              style: _mono.copyWith(
+                color: pass.isGood ? Colors.white54 : Colors.orangeAccent,
+              ),
+            ),
+          ),
+        ),
+        if (p.profileSuccess) ...[
+          const SizedBox(height: 8),
+          SelectableText(
+            OrpheusNativeLabels.copyRecommendedOffsetLine(p),
+            style: _mono.copyWith(color: Colors.white38),
+          ),
+          const SizedBox(height: 6),
+          TextButton(
+            onPressed: _busy ? null : _copyRecommendedOffset,
+            child: const Text(
+              'COPY RECOMMENDED OFFSET (DEV ONLY)',
+              style: TextStyle(fontFamily: 'monospace'),
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -288,6 +419,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
               'N2 PLAYS NATIVE CLICK BACKING AND RECORDS MIC AT THE SAME TIME.\n'
               'N2B MEASURES CLICK ALIGNMENT (ENGINEERING VALIDATION).\n'
               'N2D PROVES COMPENSATION ZEROS RESIDUAL OFFSET.\n'
+              'N2E RUNS 3 PASSES AND PICKS A RECOMMENDED ROUTE OFFSET.\n'
               'NEITHER USES YOUR CURRENT PROJECT OR FOUR-TRACK SESSION.',
               style: _mono.copyWith(color: Colors.white54),
             ),
@@ -342,6 +474,21 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
               ),
             ),
             const SizedBox(height: 10),
+            FilledButton(
+              onPressed: _busy ? null : _runCalibrationProfile,
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.teal.shade900,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text(
+                'RUN N2E CALIBRATION PROFILE',
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
             if (n1Path != null)
               Align(
                 alignment: Alignment.centerLeft,
@@ -381,6 +528,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
             ),
             if (_n1Diag != null) _buildN1Summary(_n1Diag!),
             if (_n2Diag != null) _buildN2Summary(_n2Diag!),
+            if (_n2eProfile != null) _buildN2eProfile(_n2eProfile!),
             if (_n1Diag != null || _n2Diag != null) ...[
               const Divider(color: Colors.white24, height: 24),
               _buildRawDetails(),

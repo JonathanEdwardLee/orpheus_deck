@@ -8,6 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'orpheus_native_bindings.dart';
 import 'orpheus_native_duplex_bindings.dart';
 import 'orpheus_native_labels.dart';
+import 'orpheus_native_latency_profile.dart';
 
 /// Phase N1 — Oboe handshake orchestration (no main recorder integration).
 class OrpheusNativeAudio {
@@ -155,5 +156,28 @@ class OrpheusNativeAudio {
       b.n2Shutdown();
       _bindings = null;
     }
+  }
+
+  /// Phase N2E — run [passCount] N2 passes and select recommended latency offset.
+  Future<OrpheusLatencyProfileResult> runCalibrationProfile({
+    int passCount = OrpheusLatencyProfile.defaultPassCount,
+    Duration pauseBetweenPasses = const Duration(seconds: 2),
+    void Function(int currentPass, int totalPasses)? onPassStarted,
+  }) async {
+    final passes = <OrpheusN2ePassRecord>[];
+    for (var i = 0; i < passCount; i++) {
+      onPassStarted?.call(i + 1, passCount);
+      if (i > 0) {
+        await Future<void>.delayed(pauseBetweenPasses);
+      }
+      final diag = await runDuplexTest();
+      passes.add(OrpheusN2ePassRecord.evaluate(i + 1, diag));
+    }
+    final profile = OrpheusLatencyProfile.compute(passes);
+    debugPrint(
+      'Orpheus N2E: ${profile.goodPassCount}/${profile.totalRuns} good — '
+      '${OrpheusNativeLabels.formatLatencyProfile(profile)}',
+    );
+    return profile;
   }
 }

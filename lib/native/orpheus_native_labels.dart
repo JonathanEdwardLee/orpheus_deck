@@ -1,5 +1,6 @@
 import 'orpheus_native_bindings.dart';
 import 'orpheus_native_duplex_bindings.dart';
+import 'orpheus_native_latency_profile.dart';
 
 /// Oboe 1.10 enum labels (see oboe/Definitions.h).
 class OrpheusNativeLabels {
@@ -230,5 +231,59 @@ class OrpheusNativeLabels {
       buf.writeln('click ${i + 1} offset $off samples (residual $res)');
     }
     return buf.toString().trimRight();
+  }
+
+  /// N2E multi-pass profile block (engineering — not saved to main recorder).
+  static String formatLatencyProfile(OrpheusLatencyProfileResult p) {
+    final buf = StringBuffer('N2E CALIBRATION PROFILE\n');
+    buf.writeln('RUNS GOOD: ${p.goodPassCount} / ${p.totalRuns}');
+
+    if (!p.profileSuccess) {
+      buf.writeln('PROFILE: FAILED');
+      if (p.failureMessage != null) {
+        buf.writeln(p.failureMessage);
+      }
+      buf.writeln('QUALITY: ${p.qualityLabel}');
+      buf.writeln(_n2eInstructions);
+      return buf.toString().trimRight();
+    }
+
+    final ms = p.recommendedOffsetMs ?? 0;
+    buf.writeln(
+      'RECOMMENDED OFFSET: ${p.recommendedOffsetSamples} SAMPLES / '
+      '${ms.toStringAsFixed(1)} MS',
+    );
+    buf.writeln('PROFILE SPREAD: ${p.profileSpreadSamples} SAMPLES');
+    buf.writeln('QUALITY: ${p.qualityLabel}');
+    buf.writeln('PROFILE CONFIDENCE: ${p.profileQualityPercent}%');
+    buf.writeln(
+      '${OrpheusLatencyProfileResult.devOnlyFieldName}: '
+      '${p.recommendedOffsetSamples}',
+    );
+    buf.writeln(_n2eInstructions);
+    return buf.toString().trimRight();
+  }
+
+  static const String _n2eInstructions =
+      'USE PHONE SPEAKER.\n'
+      'VOLUME UP.\n'
+      'KEEP PHONE STILL.\n'
+      'RUN AGAIN IF THE VALUE CHANGES A LOT.';
+
+  static String formatN2ePassSummary(OrpheusN2ePassRecord pass) {
+    final d = pass.diagnostics;
+    final status = pass.isGood ? 'GOOD' : 'REJECTED';
+    final detail = pass.isGood
+        ? 'offset=${d.medianOffsetSamples} spread=${d.spreadSamples}'
+        : (pass.rejectReason ?? 'unknown');
+    return 'Run ${pass.runIndex}: $status — $detail';
+  }
+
+  static String copyRecommendedOffsetLine(OrpheusLatencyProfileResult p) {
+    if (!p.profileSuccess || p.recommendedOffsetSamples == null) {
+      return '';
+    }
+    return '${OrpheusLatencyProfileResult.devOnlyFieldName}='
+        '${p.recommendedOffsetSamples}';
   }
 }
