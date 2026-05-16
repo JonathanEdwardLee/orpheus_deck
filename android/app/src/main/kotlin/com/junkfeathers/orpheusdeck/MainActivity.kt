@@ -1,6 +1,7 @@
 package com.junkfeathers.orpheusdeck
 
 import android.content.ClipData
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
@@ -92,6 +93,67 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     } catch (_: Exception) {
                         result.success(false)
+                    }
+                }
+
+                /**
+                 * Best-effort listing of .wav files saved under Music/Orpheus Deck
+                 * (MediaStore RELATIVE_PATH matches). Used by the in-app EXPORT browser.
+                 */
+                "scanOrpheusMusicExports" -> {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                        result.success(emptyList<Map<String, Any>>())
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val out = ArrayList<Map<String, Any>>()
+                        val resolver = applicationContext.contentResolver
+                        val collection =
+                            MediaStore.Audio.Media.getContentUri(
+                                MediaStore.VOLUME_EXTERNAL_PRIMARY,
+                            )
+                        val relPrefix =
+                            Environment.DIRECTORY_MUSIC + "/Orpheus Deck"
+                        val projection = arrayOf(
+                            MediaStore.Audio.Media._ID,
+                            MediaStore.Audio.Media.DISPLAY_NAME,
+                            MediaStore.Audio.Media.DATE_ADDED,
+                        )
+                        val selection =
+                            "${MediaStore.Audio.Media.RELATIVE_PATH} LIKE ? AND " +
+                                "${MediaStore.Audio.Media.DISPLAY_NAME} LIKE ?"
+                        val selArgs = arrayOf("$relPrefix%", "%.wav")
+                        val sortOrder = "${MediaStore.Audio.Media.DATE_ADDED} DESC"
+                        resolver.query(
+                            collection,
+                            projection,
+                            selection,
+                            selArgs,
+                            sortOrder,
+                        )?.use { c ->
+                            val idI = c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
+                            val nmI =
+                                c.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
+                            val daI =
+                                c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
+                            while (c.moveToNext()) {
+                                val id = c.getLong(idI)
+                                val name = c.getString(nmI) ?: continue
+                                val addedSec = c.getLong(daI)
+                                val uri =
+                                    ContentUris.withAppendedId(collection, id).toString()
+                                out.add(
+                                    mapOf(
+                                        "filename" to name,
+                                        "storageUri" to uri,
+                                        "dateAddedSec" to addedSec,
+                                    ),
+                                )
+                            }
+                        }
+                        result.success(out)
+                    } catch (e: Exception) {
+                        result.error("scan_failed", e.message, null)
                     }
                 }
 
