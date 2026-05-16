@@ -63,6 +63,67 @@ String _formatExportDateTime(DateTime d) {
 /// Matches [pubspec.yaml] version — shown in Settings ▸ About.
 const String kOrpheusAppVersion = '1.0.0+1';
 
+OverlayEntry? _orpheusOledToastEntry;
+
+/// OLED-style status toast — black panel, white border, uppercase monospace.
+void showOrpheusOledToast(BuildContext context, String message) {
+  _orpheusOledToastEntry?.remove();
+  _orpheusOledToastEntry = null;
+  final overlay = Overlay.maybeOf(context);
+  if (overlay == null) return;
+  final upper = message.toUpperCase();
+  final entry = OverlayEntry(
+    builder: (ctx) {
+      final pad = MediaQuery.paddingOf(ctx);
+      return Stack(
+        children: [
+          Positioned(
+            left: 16,
+            right: 16,
+            top: pad.top + 56,
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 440),
+                child: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      border: Border.all(color: Colors.white, width: 2),
+                    ),
+                    child: Text(
+                      upper,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.bold,
+                        fontSize: 11,
+                        letterSpacing: 0.6,
+                        height: 1.25,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    },
+  );
+  _orpheusOledToastEntry = entry;
+  overlay.insert(entry);
+  Future<void>.delayed(const Duration(milliseconds: 2300), () {
+    entry.remove();
+    if (identical(_orpheusOledToastEntry, entry)) {
+      _orpheusOledToastEntry = null;
+    }
+  });
+}
+
 /// App-level preferences at Documents/OrpheusDeck/settings.json (not per session).
 ///
 /// -----------------------------------------------------------------------------
@@ -416,16 +477,8 @@ void showOrpheusDeckSettingsDialog(BuildContext outerContext) {
                     alignment: Alignment.centerLeft,
                     child: TextButton(
                       onPressed: () {
-                        ScaffoldMessenger.of(outerContext).showSnackBar(
-                          const SnackBar(
-                            content: Text(
-                              'LATENCY TEST: COMING SOON',
-                              style: TextStyle(fontFamily: 'monospace'),
-                            ),
-                            backgroundColor: Colors.white24,
-                            duration: Duration(seconds: 2),
-                          ),
-                        );
+                        showOrpheusOledToast(
+                            outerContext, 'LATENCY TEST: COMING SOON');
                       },
                       style: TextButton.styleFrom(
                         foregroundColor: Colors.white70,
@@ -918,25 +971,26 @@ class JunkfeathersGlitchSplash extends StatefulWidget {
       _JunkfeathersGlitchSplashState();
 }
 
-/// Quick fade-in → glitch hold → fade-out (total [_kJunkfeathersSplashTotalMs]).
-const int _kJunkfeathersSplashTotalMs = 4000;
+/// ~4.2s total: fade-in → light glitch → strong glitch → full-screen signal loss.
+const int _kJunkfeathersSplashTotalMs = 4200;
 
-const double _kSplashPhaseFadeInEnd = 0.14;
-const double _kSplashPhaseGlitchHoldEnd = 0.78;
+const double _kSpEndFade = 0.11;
+const double _kSpEndLight = 0.38;
+const double _kSpEndHeavy = 0.66;
 
-void _splashPhases(
-    double progress, void Function(int phase, double phaseProgress) out) {
-  if (progress < _kSplashPhaseFadeInEnd) {
-    out(0, progress / _kSplashPhaseFadeInEnd);
-  } else if (progress < _kSplashPhaseGlitchHoldEnd) {
-    out(1,
-        (progress - _kSplashPhaseFadeInEnd) /
-            (_kSplashPhaseGlitchHoldEnd - _kSplashPhaseFadeInEnd));
+/// Phases: 0 fade-in, 1 light interference, 2 strong interference, 3 glitch-out.
+void _splashPhasesFour(
+  double t,
+  void Function(int phase, double phaseProgress) out,
+) {
+  if (t < _kSpEndFade) {
+    out(0, t / _kSpEndFade);
+  } else if (t < _kSpEndLight) {
+    out(1, (t - _kSpEndFade) / (_kSpEndLight - _kSpEndFade));
+  } else if (t < _kSpEndHeavy) {
+    out(2, (t - _kSpEndLight) / (_kSpEndHeavy - _kSpEndLight));
   } else {
-    out(
-        2,
-        (progress - _kSplashPhaseGlitchHoldEnd) /
-            (1.0 - _kSplashPhaseGlitchHoldEnd));
+    out(3, (t - _kSpEndHeavy) / (1.0 - _kSpEndHeavy));
   }
 }
 
@@ -994,7 +1048,7 @@ class _JunkfeathersGlitchSplashState extends State<JunkfeathersGlitchSplash>
   }
 }
 
-/// Full-bleed boot glitch / scanlines behind the logo.
+/// Full-bleed boot interference: bands, tear, scanlines — no random specks.
 class JunkfeathersSplashBackdropPainter extends CustomPainter {
   JunkfeathersSplashBackdropPainter(this.progress);
 
@@ -1006,76 +1060,88 @@ class JunkfeathersSplashBackdropPainter extends CustomPainter {
 
     int phase = 0;
     double phaseProgress = 0;
-    _splashPhases(progress, (p, pp) {
+    _splashPhasesFour(progress, (p, pp) {
       phase = p;
       phaseProgress = pp;
     });
 
-    final int globalStep = (progress * 200).floor();
+    final int globalStep = (progress * 240).floor();
     final Random globalR = Random(globalStep);
-
-    double opacity = 1.0;
-    if (phase == 0) {
-      opacity = 0.05 + 0.95 * phaseProgress;
-    } else if (phase == 2) {
-      opacity = 1.0 - 0.95 * phaseProgress;
-    }
-    if (phase != 1) {
-      if (globalR.nextInt(100) < 7) {
-        opacity *= 0.4 + globalR.nextDouble() * 0.6;
-      }
-    }
 
     final double w = size.width;
     final double h = size.height;
 
-    int coverChance = 40;
-    if (phase == 1) {
-      coverChance = 42 + globalR.nextInt(38);
-    } else if (phase == 0) {
-      const steps = 24;
-      final cur =
-          (phaseProgress * (steps - 1)).floor().clamp(0, steps - 1);
-      coverChance = (92 - (80 * cur / (steps - 1))).toInt();
+    // Master visibility (fade-in/out ends of sequence).
+    double master = 1.0;
+    if (phase == 0) {
+      master = 0.04 + 0.96 * phaseProgress;
+    } else if (phase == 3) {
+      master = 1.0 - 0.97 * phaseProgress;
+    }
+
+    // Phase-dependent corruption strength (no "star" noise).
+    int coverBase;
+    double tearAmp;
+    int scanMul; // 1 = every 3px, 2 = denser in heavy phases
+    if (phase == 0) {
+      coverBase = (6 + (14 * phaseProgress)).toInt();
+      tearAmp = 0;
+      scanMul = 1;
+    } else if (phase == 1) {
+      coverBase = 18 + (globalR.nextInt(15));
+      tearAmp = 3.0 + phaseProgress * 4.0;
+      scanMul = 1;
+    } else if (phase == 2) {
+      coverBase = 48 + (globalR.nextInt(22));
+      tearAmp = 10.0 + phaseProgress * 12.0;
+      scanMul = 2;
     } else {
-      const steps = 22;
-      final cur =
-          (phaseProgress * (steps - 1)).floor().clamp(0, steps - 1);
-      coverChance = (12 + (82 * cur / (steps - 1))).toInt();
+      coverBase = 72 + (globalR.nextInt(25));
+      tearAmp = 22.0 + phaseProgress * 26.0;
+      scanMul = 2;
     }
 
     final Paint bandPaint = Paint()
-      ..color = Colors.black.withValues(alpha: opacity);
+      ..color = Colors.black.withValues(alpha: master);
     final Paint fastLine = Paint()
-      ..color = Colors.white.withValues(alpha: opacity * 0.9);
+      ..color = Colors.white.withValues(alpha: 0.82 * master);
+    final Paint tearWhite = Paint()
+      ..color = Colors.white.withValues(alpha: 0.35 * master);
 
     int y = 0;
     while (y < h) {
-      int bandH = globalR.nextInt(16) + 3;
+      int bandH = globalR.nextInt(14) + 4;
       if (y + bandH > h) bandH = max(0, (h - y).floor());
       if (bandH <= 0) break;
+
+      final rowRand = Random(globalStep ^ (y * 9973));
+      final tearDx =
+          (rowRand.nextDouble() - 0.5) * 2.0 * tearAmp * master;
+
+      int coverChance = (coverBase + rowRand.nextInt(12)).clamp(0, 98);
       if (globalR.nextInt(100) < coverChance) {
         canvas.drawRect(
-            Rect.fromLTWH(0, y.toDouble(), w, bandH.toDouble()), bandPaint);
-      } else if (globalR.nextInt(100) < 14) {
-        canvas.drawRect(Rect.fromLTWH(0, y.toDouble(), w, 1.5), fastLine);
+          Rect.fromLTWH(tearDx, y.toDouble(), w, bandH.toDouble()),
+          bandPaint,
+        );
+      } else {
+        if (globalR.nextInt(100) < (phase >= 2 ? 22 : 12)) {
+          canvas.drawRect(
+              Rect.fromLTWH(tearDx, y.toDouble(), w, 1.2), fastLine);
+        }
+        if (phase >= 2 && globalR.nextInt(100) < 18) {
+          canvas.drawRect(
+            Rect.fromLTWH(tearDx + w * 0.35, y.toDouble(), w * 0.12, 1),
+            tearWhite,
+          );
+        }
       }
       y += bandH;
     }
 
-    final Paint staticPt = Paint()
-      ..color = Colors.white.withValues(alpha: opacity * 0.4);
-    final int specks = (w * h / 10000).round().clamp(40, 400);
-    for (int i = 0; i < specks; i++) {
-      if (globalR.nextInt(100) > 58) continue;
-      final dx = globalR.nextDouble() * w;
-      final dy = globalR.nextDouble() * h;
-      canvas.drawRect(Rect.fromLTWH(dx, dy, 1, 1), staticPt);
-    }
-
     final Paint scan = Paint()
-      ..color = Colors.black.withValues(alpha: 0.2 * opacity);
-    for (double sy = 0; sy < h; sy += 3) {
+      ..color = Colors.black.withValues(alpha: 0.14 * master);
+    for (double sy = 0; sy < h; sy += (3 / scanMul)) {
       canvas.drawRect(Rect.fromLTWH(0, sy, w, 1), scan);
     }
   }
@@ -1085,7 +1151,7 @@ class JunkfeathersSplashBackdropPainter extends CustomPainter {
       old.progress != progress;
 }
 
-/// Logo wordmark + dead birds only (interference drawn by backdrop).
+/// Logo wordmark + solid dead-bird marks (shares phase timing with backdrop).
 class JunkfeathersLogoMarkPainter extends CustomPainter {
   JunkfeathersLogoMarkPainter(this.progress);
 
@@ -1097,55 +1163,63 @@ class JunkfeathersLogoMarkPainter extends CustomPainter {
 
     int phase = 0;
     double phaseProgress = 0;
-    _splashPhases(progress, (p, pp) {
+    _splashPhasesFour(progress, (p, pp) {
       phase = p;
       phaseProgress = pp;
     });
 
-    const int totalSteps = 200;
+    const int totalSteps = 240;
     final int globalStep = (progress * totalSteps).floor();
     final Random globalR = Random(globalStep);
 
-    double jitterX = 0;
-    double jitterY = 0;
-    if (phase != 1) {
-      if (globalR.nextInt(100) < 32) {
-        jitterX = (globalR.nextInt(3) - 1.0);
-        jitterY = (globalR.nextInt(3) - 1.0);
-      }
+    double jMag = 0;
+    if (phase == 1) jMag = 1.0;
+    if (phase == 2) jMag = 2.0;
+    if (phase == 3) jMag = 3.2 + phaseProgress * 3.5;
+
+    double jitterX = (globalR.nextDouble() - 0.5) * 2.0 * jMag;
+    double jitterY = (globalR.nextDouble() - 0.5) * 2.0 * jMag;
+    if (phase == 0) {
+      jitterX *= 0.35;
+      jitterY *= 0.35;
     }
 
     canvas.translate(jitterX, jitterY);
 
-    double opacity = 1.0;
+    double master = 1.0;
     if (phase == 0) {
-      opacity = 0.08 + (0.92 * phaseProgress);
+      master = 0.06 + 0.94 * phaseProgress;
     }
-    if (phase == 2) {
-      opacity = 1.0 - (0.92 * phaseProgress);
+    if (phase == 3) {
+      master = 1.0 - 0.98 * phaseProgress;
     }
-
-    if (phase != 1) {
-      if (globalR.nextInt(100) < 6) {
-        opacity *= 0.45 + (globalR.nextDouble() * 0.55);
+    if (phase == 1 || phase == 2) {
+      if (globalR.nextInt(100) < 8) {
+        master *= 0.5 + globalR.nextDouble() * 0.5;
       }
     }
 
-    final linePaint = Paint()
-      ..color = Colors.white.withValues(alpha: opacity)
-      ..strokeWidth = 1.0
-      ..style = PaintingStyle.stroke;
-
-    final whitePaint = Paint()
-      ..color = Colors.white.withValues(alpha: opacity)
-      ..style = PaintingStyle.fill;
-
     const int textSize = 2;
-    _drawText(canvas, "JUNKFEATHERS", 4, textSize, opacity);
-    _drawText(canvas, "TECH", 22, textSize, opacity);
+    _drawText(canvas, 'JUNKFEATHERS', 4, textSize, master);
+    _drawText(canvas, 'TECH', 22, textSize, master);
 
-    _drawBird(canvas, 32, 46, 12, linePaint, whitePaint);
-    _drawBird(canvas, 96, 46, 12, linePaint, whitePaint);
+    _drawBirdSolid(canvas, 32, 46, 12, master);
+    _drawBirdSolid(canvas, 96, 46, 12, master);
+
+    // Final phase: slice the mark itself (backdrop already carries interference).
+    if (phase == 3) {
+      final Random corruptR = Random(globalStep ^ 0x5fce);
+      final int cov =
+          (36 + phaseProgress * 58).round().clamp(32, 98).toInt();
+      for (int yy = 0; yy < 64; yy += 3) {
+        if (corruptR.nextInt(100) >= cov) continue;
+        final bh = corruptR.nextInt(5) + 1;
+        canvas.drawRect(
+          Rect.fromLTWH(0, yy.toDouble(), 128, bh.toDouble()),
+          Paint()..color = Colors.black.withValues(alpha: master),
+        );
+      }
+    }
 
     canvas.translate(-jitterX, -jitterY);
   }
@@ -1159,7 +1233,7 @@ class JunkfeathersLogoMarkPainter extends CustomPainter {
           color: Colors.white.withValues(alpha: opacity),
           fontFamily: 'monospace',
           fontSize: size * 8.0,
-          fontWeight: FontWeight.bold,
+          fontWeight: FontWeight.w900,
           height: 1.0,
         ),
       ),
@@ -1170,24 +1244,38 @@ class JunkfeathersLogoMarkPainter extends CustomPainter {
     textPainter.paint(canvas, Offset(x, y));
   }
 
-  void _drawBird(Canvas canvas, double cx, double cy, double r,
-      Paint strokePaint, Paint fillPaint) {
-    canvas.drawCircle(Offset(cx, cy), r, strokePaint);
+  void _drawBirdSolid(Canvas canvas, double cx, double cy, double r, double m) {
+    final fill = Paint()
+      ..color = Colors.white.withValues(alpha: m)
+      ..style = PaintingStyle.fill;
+
+    final ring = Paint()
+      ..color = Colors.black.withValues(alpha: m)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2;
+
+    final eye = Paint()
+      ..color = Colors.black.withValues(alpha: m)
+      ..strokeWidth = 1.6
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawCircle(Offset(cx, cy), r, fill);
+    canvas.drawCircle(Offset(cx, cy), r, ring);
 
     final double exL = cx - (r / 2);
     final double exR = cx + (r / 2);
     final double ey = cy - (r / 4);
-    const double s = 2;
+    const double s = 2.2;
 
     canvas.drawLine(
-        Offset(exL - s, ey - s), Offset(exL + s, ey + s), strokePaint);
+        Offset(exL - s, ey - s), Offset(exL + s, ey + s), eye);
     canvas.drawLine(
-        Offset(exL - s, ey + s), Offset(exL + s, ey - s), strokePaint);
-
+        Offset(exL - s, ey + s), Offset(exL + s, ey - s), eye);
     canvas.drawLine(
-        Offset(exR - s, ey - s), Offset(exR + s, ey + s), strokePaint);
+        Offset(exR - s, ey - s), Offset(exR + s, ey + s), eye);
     canvas.drawLine(
-        Offset(exR - s, ey + s), Offset(exR + s, ey - s), strokePaint);
+        Offset(exR - s, ey + s), Offset(exR + s, ey - s), eye);
 
     final double bx = cx;
     final double by = cy + (r / 3);
@@ -1198,7 +1286,14 @@ class JunkfeathersLogoMarkPainter extends CustomPainter {
       ..lineTo(bx + 4, by - 2)
       ..close();
 
-    canvas.drawPath(beak, fillPaint);
+    canvas.drawPath(beak, fill);
+    canvas.drawPath(
+      beak,
+      Paint()
+        ..color = Colors.black.withValues(alpha: m)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0,
+    );
   }
 
   @override
@@ -3776,13 +3871,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
   }
 
   void _showSnackbar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message, style: const TextStyle(fontFamily: 'monospace')),
-        backgroundColor: Colors.white24,
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    showOrpheusOledToast(context, message);
   }
 
   void _saveMixerUndo() {
@@ -4726,7 +4815,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     return Scaffold(
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(6.0),
+          padding: const EdgeInsets.all(8.0),
           child: Column(
             children: [
               DeckHeader(
@@ -4737,15 +4826,14 @@ class _RecorderScreenState extends State<RecorderScreen> {
                 hasUndo: _lastUndo.hasUndo,
                 onUndo: _performUndo,
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               Expanded(
                 child: Container(
                   decoration: BoxDecoration(
                     border: Border.all(color: Colors.white, width: 2),
                   ),
                   child: ListView.separated(
-                    padding: EdgeInsets.zero,
-                    physics: const ClampingScrollPhysics(),
+                    physics: const BouncingScrollPhysics(),
                     itemCount: 4,
                     separatorBuilder: (context, index) => const Divider(
                       color: Colors.white24,
@@ -4786,7 +4874,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 10),
               TapeReelTransport(
                 playbackMs: _playbackMs,
                 tapeLengthMs: tapeLengthMs,
@@ -4795,7 +4883,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
                 seekEnabled: !_isExporting,
                 onTapeSeekMs: _onTapeHeadSeekFromReel,
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 10),
               TransportControls(
                 isPlaying: _isPlaying,
                 isRecording: _isRecording,
@@ -5320,7 +5408,7 @@ class TrackStrip extends StatelessWidget {
         : "";
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Column(
         children: [
           Row(
@@ -5328,19 +5416,7 @@ class TrackStrip extends StatelessWidget {
               GestureDetector(
                 onLongPress: hasAudio && clipId.isNotEmpty
                     ? () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            behavior: SnackBarBehavior.floating,
-                            content: Text(
-                              'CLIP: $clipId',
-                              style: const TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 12,
-                              ),
-                            ),
-                            duration: const Duration(seconds: 3),
-                          ),
-                        );
+                        showOrpheusOledToast(context, 'CLIP: $clipId');
                       }
                     : null,
                 child: SizedBox(
@@ -5384,7 +5460,7 @@ class TrackStrip extends StatelessWidget {
               ),
               Expanded(
                 child: Container(
-                  height: 34,
+                  height: 40,
                   decoration: BoxDecoration(
                     color: Colors.black,
                     border: Border.all(color: Colors.white54, width: 1),
@@ -5429,7 +5505,7 @@ class TrackStrip extends StatelessWidget {
                 ),
             ],
           ),
-          const SizedBox(height: 5),
+          const SizedBox(height: 8),
           Row(
             children: [
               const SizedBox(width: 65),
