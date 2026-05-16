@@ -21,8 +21,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart'
-    show ValueListenable, ValueNotifier, compute;
+import 'package:flutter/foundation.dart' show compute, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:record/record.dart';
@@ -41,6 +40,475 @@ import 'widgets/tape_reel_transport.dart';
 /// One cassette side — fixed transport length (0 … tapeLengthMs).
 /// Clip lengths do not shorten the tape; matches ORPHEUS_DESIGN_MANIFESTO.md.
 const int tapeLengthMs = 15 * 60 * 1000;
+
+/// Header / dial tape clock [`mm:ss`] from [`tapeTransportMs`] (same as `_playbackMs`).
+String _tapeClockMmSs(int ms) {
+  final int clampedMs = ms < 0 ? 0 : ms;
+  final int totalSec = clampedMs ~/ 1000;
+  final m = (totalSec ~/ 60).toString().padLeft(2, '0');
+  final s = (totalSec % 60).toString().padLeft(2, '0');
+  return '$m:$s';
+}
+
+String _formatExportDateTime(DateTime d) {
+  final l = d.toLocal();
+  final y = l.year.toString().padLeft(4, '0');
+  final mo = l.month.toString().padLeft(2, '0');
+  final da = l.day.toString().padLeft(2, '0');
+  final h = l.hour.toString().padLeft(2, '0');
+  final mi = l.minute.toString().padLeft(2, '0');
+  return '$y-$mo-$da $h:$mi';
+}
+
+/// Matches [pubspec.yaml] version — shown in Settings ▸ About.
+const String kOrpheusAppVersion = '1.0.0+1';
+
+/// App-level preferences at Documents/OrpheusDeck/settings.json (not per session).
+///
+/// -----------------------------------------------------------------------------
+/// AUTO CALIBRATION (future design — NOT implemented Phase D2)
+/// -----------------------------------------------------------------------------
+/// One-shot flow the user triggers from Settings/Tools later:
+/// 1. Temporarily mute track exports; arm a disposable take or silent track.
+/// 2. Route the CLICK bus (already a timeline WAV aligned to BPM) through
+///    the output device — prefer wired headphones/speaker path user records with.
+/// 3. Record 1–2 seconds of MIC input while emitting a sparse click pulse train
+///    (existing click hit or louder diagnostic pulse).
+/// 4. On the freshly recorded clip, scan samples for first transient rise above
+///    noise floor; compare predicted timeline position of that click vs onset in
+///    the recording computed from WAV sample index + known sampleRate.
+/// 5. Estimated round-trip = (detected − expected) − [optional] known output
+///    buffer constant; optionally split into output vs input halves for UI.
+/// 6. Present suggested [manualLatencyAdjustMs] delta; optionally auto-fill —
+///    must never overwrite tapeStartMs/session clips.
+///
+/// Bluetooth adds ~80–220+ ms jitter vs wired; wired is far more repeatable.
+/// Calibration should tag "audio route" fingerprint (speaker vs BT A2DP) once
+/// the platform exposes a stable descriptor; otherwise Bluetooth users rely on
+/// manual trim rather than brittle auto-values.
+/// -----------------------------------------------------------------------------
+class OrpheusSettings {
+  OrpheusSettings._();
+  static final OrpheusSettings instance = OrpheusSettings._();
+
+  static const int manualLatencyAdjustMinMs = -2000;
+  static const int manualLatencyAdjustMaxMs = 2000;
+
+  bool latencyCompensationEnabled = true;
+
+  /// When true, show the pre-record informational checklist dialog.
+  bool recordingCheckReminderEnabled = true;
+
+  /// Subtracted from decoded file position during PLAY/REC monitoring/export
+  /// adelay baseline; **positive** pushes perceived audio slightly earlier vs the
+  /// tape timeline (helps when overdubs feel late). Does **not** change stored
+  /// [trackTapeStartMs] metadata.
+  int manualLatencyAdjustMs = 0;
+
+  Future<File> _settingsFile() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final deck = Directory('${dir.path}/OrpheusDeck');
+    if (!await deck.exists()) {
+      await deck.create(recursive: true);
+    }
+    return File('${deck.path}/settings.json');
+  }
+
+  Future<void> load() async {
+    try {
+      final file = await _settingsFile();
+      if (!await file.exists()) {
+        await save();
+        return;
+      }
+      final dynamic raw = jsonDecode(await file.readAsString());
+      if (raw is Map<String, dynamic>) {
+        final dynamic latRaw = raw['latencyCompensationEnabled'];
+        // Only a JSON boolean `false` turns compensation off; missing or legacy
+        // wrong-typed values default to ON for new-ish installs.
+        latencyCompensationEnabled = latRaw is bool ? latRaw : true;
+
+        final dynamic manRaw = raw['manualLatencyAdjustMs'];
+        if (manRaw is num) {
+          manualLatencyAdjustMs = manRaw
+              .round()
+              .clamp(manualLatencyAdjustMinMs, manualLatencyAdjustMaxMs);
+        } else {
+          manualLatencyAdjustMs = 0;
+        }
+
+        final dynamic recRemRaw = raw['recordingCheckReminderEnabled'];
+        recordingCheckReminderEnabled =
+            recRemRaw is bool ? recRemRaw : true;
+      } else {
+        latencyCompensationEnabled = true;
+        manualLatencyAdjustMs = 0;
+        recordingCheckReminderEnabled = true;
+      }
+    } catch (e, st) {
+      debugPrint('Orpheus Deck: settings load error $e\n$st');
+      latencyCompensationEnabled = true;
+      manualLatencyAdjustMs = 0;
+      recordingCheckReminderEnabled = true;
+    }
+  }
+
+  Future<void> save() async {
+    final file = await _settingsFile();
+    await file.writeAsString(
+      jsonEncode(<String, dynamic>{
+        'latencyCompensationEnabled': latencyCompensationEnabled,
+        'manualLatencyAdjustMs': manualLatencyAdjustMs,
+        'recordingCheckReminderEnabled': recordingCheckReminderEnabled,
+      }),
+      flush: true,
+    );
+  }
+
+  Future<void> setLatencyCompensation(bool enabled) async {
+    latencyCompensationEnabled = enabled;
+    await save();
+    debugPrint(
+      'Orpheus Deck: settings latencyCompensationEnabled=$enabled',
+    );
+  }
+
+  Future<void> setManualLatencyAdjustMs(int deltaMs) async {
+    manualLatencyAdjustMs = deltaMs.clamp(
+      manualLatencyAdjustMinMs,
+      manualLatencyAdjustMaxMs,
+    );
+    await save();
+    debugPrint(
+      'Orpheus Deck: settings manualLatencyAdjustMs=$manualLatencyAdjustMs',
+    );
+  }
+
+  Future<void> bumpManualLatencyAdjustMs(int delta) async =>
+      setManualLatencyAdjustMs(manualLatencyAdjustMs + delta);
+
+  Future<void> setRecordingCheckReminderEnabled(bool enabled) async {
+    recordingCheckReminderEnabled = enabled;
+    await save();
+    debugPrint(
+      'Orpheus Deck: settings recordingCheckReminderEnabled=$enabled',
+    );
+  }
+}
+
+/// Shared settings UI (home menu + recording reminder “OPEN SETTINGS”).
+void showOrpheusDeckSettingsDialog(BuildContext outerContext) {
+  // TODO(phase-D2-latency): Auto LATENCY TEST — output click, mic capture,
+  // transient detection, round-trip estimate → suggest [manualLatencyAdjustMs].
+  showDialog(
+    context: outerContext,
+    builder: (dialogContext) {
+      return StatefulBuilder(
+        builder: (context, setDialogState) {
+          final latencyOn =
+              OrpheusSettings.instance.latencyCompensationEnabled;
+          final int manualAdj = OrpheusSettings.instance.manualLatencyAdjustMs;
+          final bool recReminderOn =
+              OrpheusSettings.instance.recordingCheckReminderEnabled;
+
+          Widget stepBtn(String t, Future<void> Function() act) {
+            return TextButton(
+              onPressed: () async {
+                await act();
+                setDialogState(() {});
+              },
+              style: TextButton.styleFrom(
+                minimumSize: const Size(40, 32),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                foregroundColor: Colors.white,
+              ),
+              child: Text(t,
+                  style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold)),
+            );
+          }
+
+          return AlertDialog(
+            backgroundColor: Colors.black,
+            shape: Border.all(color: Colors.white, width: 2),
+            title: const Text(
+              'SETTINGS',
+              style: TextStyle(
+                color: Colors.white,
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.bold,
+                letterSpacing: 2,
+              ),
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'RECORDING',
+                    style: TextStyle(
+                      color: Colors.white54,
+                      fontFamily: 'monospace',
+                      fontSize: 10,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'RECORDING CHECK REMINDER',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontFamily: 'monospace',
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      Switch(
+                        value: recReminderOn,
+                        activeThumbColor: Colors.black,
+                        activeTrackColor: Colors.white,
+                        inactiveThumbColor: Colors.white54,
+                        inactiveTrackColor: Colors.white24,
+                        onChanged: (v) async {
+                          await OrpheusSettings.instance
+                              .setRecordingCheckReminderEnabled(v);
+                          setDialogState(() {});
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    recReminderOn
+                        ? 'ON: show checklist before REC.'
+                        : 'OFF: skip pre-record checklist.',
+                    style: const TextStyle(
+                      color: Colors.white38,
+                      fontFamily: 'monospace',
+                      fontSize: 9,
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'LATENCY COMPENSATION',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontFamily: 'monospace',
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      Switch(
+                        value: latencyOn,
+                        activeThumbColor: Colors.black,
+                        activeTrackColor: Colors.white,
+                        inactiveThumbColor: Colors.white54,
+                        inactiveTrackColor: Colors.white24,
+                        onChanged: (v) async {
+                          await OrpheusSettings.instance
+                              .setLatencyCompensation(v);
+                          setDialogState(() {});
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    latencyOn
+                        ? 'ON: keeps overdubs tighter.'
+                        : 'OFF: natural delay effect.',
+                    style: const TextStyle(
+                      color: Colors.white38,
+                      fontFamily: 'monospace',
+                      fontSize: 9,
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'LATENCY ADJUST',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontFamily: 'monospace',
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Use if overdubs sound late or early.',
+                    style: TextStyle(
+                      color: Colors.white38,
+                      fontFamily: 'monospace',
+                      fontSize: 9,
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '$manualAdj ms  •  PLAY / monitor / EXPORT  •  tape positions unchanged',
+                    style: const TextStyle(
+                      color: Colors.white38,
+                      fontFamily: 'monospace',
+                      fontSize: 9,
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 4,
+                    runSpacing: 4,
+                    children: [
+                      stepBtn(
+                          '-100',
+                          () => OrpheusSettings.instance
+                              .bumpManualLatencyAdjustMs(-100)),
+                      stepBtn(
+                          '+100',
+                          () => OrpheusSettings.instance
+                              .bumpManualLatencyAdjustMs(100)),
+                      stepBtn(
+                          '-10',
+                          () => OrpheusSettings.instance
+                              .bumpManualLatencyAdjustMs(-10)),
+                      stepBtn(
+                          '+10',
+                          () => OrpheusSettings.instance
+                              .bumpManualLatencyAdjustMs(10)),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  const Text(
+                    'LATENCY TEST (COMING SOON)',
+                    style: TextStyle(
+                      color: Colors.white54,
+                      fontFamily: 'monospace',
+                      fontSize: 10,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Will play a click, record it, detect the transient, and suggest a latency value.',
+                    style: TextStyle(
+                      color: Colors.white38,
+                      fontFamily: 'monospace',
+                      fontSize: 9,
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: () {
+                        ScaffoldMessenger.of(outerContext).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'LATENCY TEST: COMING SOON',
+                              style: TextStyle(fontFamily: 'monospace'),
+                            ),
+                            backgroundColor: Colors.white24,
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
+                      },
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.white70,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                      ),
+                      child: const Text(
+                        'COMING SOON',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.bold,
+                          fontSize: 10,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'ABOUT',
+                    style: TextStyle(
+                      color: Colors.white54,
+                      fontFamily: 'monospace',
+                      fontSize: 10,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Orpheus Deck\n'
+                    'Four-Track Audio Recorder\n'
+                    'MK-I Beta\n'
+                    'Version $kOrpheusAppVersion',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontFamily: 'monospace',
+                      fontSize: 10,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  const Text(
+                    'PRO MODE (COMING LATER)',
+                    style: TextStyle(
+                      color: Colors.white54,
+                      fontFamily: 'monospace',
+                      fontSize: 10,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'PRO MODE FEATURES COMING LATER',
+                    style: TextStyle(
+                      color: Colors.white38,
+                      fontFamily: 'monospace',
+                      fontSize: 9,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text(
+                  'CLOSE',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+}
 
 /// Parameters for [buildClickTrackWavBytes] (must stay simple for [compute]).
 class ClickWavParams {
@@ -166,7 +634,12 @@ Uint8List buildClickTrackWavBytes(ClickWavParams p) {
   return _pcmMono16LeToWavBytes(samples, sampleRate);
 }
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+  ]);
+  await OrpheusSettings.instance.load();
   runApp(const OrpheusDeckApp());
 }
 
@@ -297,6 +770,17 @@ List<ExportEntry> parseExportsFromJson(dynamic raw) {
     }
   }
   return out;
+}
+
+class _ExportBrowseSnapshot {
+  const _ExportBrowseSnapshot({
+    required this.entries,
+    required this.footerHintText,
+  });
+
+  final List<ExportEntry> entries;
+  /// Shown below the scroll list (empty library / Music scan caveat).
+  final String? footerHintText;
 }
 
 class Session {
@@ -434,6 +918,28 @@ class JunkfeathersGlitchSplash extends StatefulWidget {
       _JunkfeathersGlitchSplashState();
 }
 
+/// Quick fade-in → glitch hold → fade-out (total [_kJunkfeathersSplashTotalMs]).
+const int _kJunkfeathersSplashTotalMs = 4000;
+
+const double _kSplashPhaseFadeInEnd = 0.14;
+const double _kSplashPhaseGlitchHoldEnd = 0.78;
+
+void _splashPhases(
+    double progress, void Function(int phase, double phaseProgress) out) {
+  if (progress < _kSplashPhaseFadeInEnd) {
+    out(0, progress / _kSplashPhaseFadeInEnd);
+  } else if (progress < _kSplashPhaseGlitchHoldEnd) {
+    out(1,
+        (progress - _kSplashPhaseFadeInEnd) /
+            (_kSplashPhaseGlitchHoldEnd - _kSplashPhaseFadeInEnd));
+  } else {
+    out(
+        2,
+        (progress - _kSplashPhaseGlitchHoldEnd) /
+            (1.0 - _kSplashPhaseGlitchHoldEnd));
+  }
+}
+
 class _JunkfeathersGlitchSplashState extends State<JunkfeathersGlitchSplash>
     with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
@@ -442,7 +948,9 @@ class _JunkfeathersGlitchSplashState extends State<JunkfeathersGlitchSplash>
   void initState() {
     super.initState();
     _ctrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 5500));
+      vsync: this,
+      duration: const Duration(milliseconds: _kJunkfeathersSplashTotalMs),
+    );
     _ctrl.forward().then((_) {
       if (mounted) widget.onComplete();
     });
@@ -458,55 +966,150 @@ class _JunkfeathersGlitchSplashState extends State<JunkfeathersGlitchSplash>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Center(
-        child: AnimatedBuilder(
-          animation: _ctrl,
-          builder: (context, child) {
-            return SizedBox(
-              width: 256,
-              height: 128,
-              child: CustomPaint(
-                painter: JunkfeathersLogoPainter(_ctrl.value),
+      body: AnimatedBuilder(
+        animation: _ctrl,
+        builder: (context, child) {
+          final t = _ctrl.value;
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              CustomPaint(
+                painter: JunkfeathersSplashBackdropPainter(t),
+                child: const SizedBox.expand(),
               ),
-            );
-          },
-        ),
+              Center(
+                child: SizedBox(
+                  width: 280,
+                  height: 140,
+                  child: CustomPaint(
+                    painter: JunkfeathersLogoMarkPainter(t),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 }
 
-class JunkfeathersLogoPainter extends CustomPainter {
+/// Full-bleed boot glitch / scanlines behind the logo.
+class JunkfeathersSplashBackdropPainter extends CustomPainter {
+  JunkfeathersSplashBackdropPainter(this.progress);
+
   final double progress;
 
-  JunkfeathersLogoPainter(this.progress);
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.width <= 0 || size.height <= 0) return;
+
+    int phase = 0;
+    double phaseProgress = 0;
+    _splashPhases(progress, (p, pp) {
+      phase = p;
+      phaseProgress = pp;
+    });
+
+    final int globalStep = (progress * 200).floor();
+    final Random globalR = Random(globalStep);
+
+    double opacity = 1.0;
+    if (phase == 0) {
+      opacity = 0.05 + 0.95 * phaseProgress;
+    } else if (phase == 2) {
+      opacity = 1.0 - 0.95 * phaseProgress;
+    }
+    if (phase != 1) {
+      if (globalR.nextInt(100) < 7) {
+        opacity *= 0.4 + globalR.nextDouble() * 0.6;
+      }
+    }
+
+    final double w = size.width;
+    final double h = size.height;
+
+    int coverChance = 40;
+    if (phase == 1) {
+      coverChance = 42 + globalR.nextInt(38);
+    } else if (phase == 0) {
+      const steps = 24;
+      final cur =
+          (phaseProgress * (steps - 1)).floor().clamp(0, steps - 1);
+      coverChance = (92 - (80 * cur / (steps - 1))).toInt();
+    } else {
+      const steps = 22;
+      final cur =
+          (phaseProgress * (steps - 1)).floor().clamp(0, steps - 1);
+      coverChance = (12 + (82 * cur / (steps - 1))).toInt();
+    }
+
+    final Paint bandPaint = Paint()
+      ..color = Colors.black.withValues(alpha: opacity);
+    final Paint fastLine = Paint()
+      ..color = Colors.white.withValues(alpha: opacity * 0.9);
+
+    int y = 0;
+    while (y < h) {
+      int bandH = globalR.nextInt(16) + 3;
+      if (y + bandH > h) bandH = max(0, (h - y).floor());
+      if (bandH <= 0) break;
+      if (globalR.nextInt(100) < coverChance) {
+        canvas.drawRect(
+            Rect.fromLTWH(0, y.toDouble(), w, bandH.toDouble()), bandPaint);
+      } else if (globalR.nextInt(100) < 14) {
+        canvas.drawRect(Rect.fromLTWH(0, y.toDouble(), w, 1.5), fastLine);
+      }
+      y += bandH;
+    }
+
+    final Paint staticPt = Paint()
+      ..color = Colors.white.withValues(alpha: opacity * 0.4);
+    final int specks = (w * h / 10000).round().clamp(40, 400);
+    for (int i = 0; i < specks; i++) {
+      if (globalR.nextInt(100) > 58) continue;
+      final dx = globalR.nextDouble() * w;
+      final dy = globalR.nextDouble() * h;
+      canvas.drawRect(Rect.fromLTWH(dx, dy, 1, 1), staticPt);
+    }
+
+    final Paint scan = Paint()
+      ..color = Colors.black.withValues(alpha: 0.2 * opacity);
+    for (double sy = 0; sy < h; sy += 3) {
+      canvas.drawRect(Rect.fromLTWH(0, sy, w, 1), scan);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant JunkfeathersSplashBackdropPainter old) =>
+      old.progress != progress;
+}
+
+/// Logo wordmark + dead birds only (interference drawn by backdrop).
+class JunkfeathersLogoMarkPainter extends CustomPainter {
+  JunkfeathersLogoMarkPainter(this.progress);
+
+  final double progress;
 
   @override
   void paint(Canvas canvas, Size size) {
     canvas.scale(size.width / 128, size.height / 64);
 
     int phase = 0;
-    double phaseProgress = 0.0;
-    if (progress < (1500 / 5500)) {
-      phase = 0;
-      phaseProgress = progress / (1500 / 5500);
-    } else if (progress < (4500 / 5500)) {
-      phase = 1;
-      phaseProgress = (progress - (1500 / 5500)) / (3000 / 5500);
-    } else {
-      phase = 2;
-      phaseProgress = (progress - (4500 / 5500)) / (1000 / 5500);
-    }
+    double phaseProgress = 0;
+    _splashPhases(progress, (p, pp) {
+      phase = p;
+      phaseProgress = pp;
+    });
 
-    int totalSteps = 5500 ~/ 55;
-    int globalStep = (progress * totalSteps).floor();
-    Random globalR = Random(globalStep);
+    const int totalSteps = 200;
+    final int globalStep = (progress * totalSteps).floor();
+    final Random globalR = Random(globalStep);
 
     double jitterX = 0;
     double jitterY = 0;
-
     if (phase != 1) {
-      if (globalR.nextInt(100) < 30) {
+      if (globalR.nextInt(100) < 32) {
         jitterX = (globalR.nextInt(3) - 1.0);
         jitterY = (globalR.nextInt(3) - 1.0);
       }
@@ -516,73 +1119,35 @@ class JunkfeathersLogoPainter extends CustomPainter {
 
     double opacity = 1.0;
     if (phase == 0) {
-      opacity = 0.1 + (0.9 * phaseProgress);
+      opacity = 0.08 + (0.92 * phaseProgress);
     }
     if (phase == 2) {
-      opacity = 1.0 - (0.9 * phaseProgress);
+      opacity = 1.0 - (0.92 * phaseProgress);
     }
 
     if (phase != 1) {
-      if (globalR.nextInt(100) < 5) {
-        opacity *= 0.5 + (globalR.nextDouble() * 0.5);
+      if (globalR.nextInt(100) < 6) {
+        opacity *= 0.45 + (globalR.nextDouble() * 0.55);
       }
     }
-
-    final whitePaint = Paint()
-      ..color = Colors.white.withValues(alpha: opacity)
-      ..style = PaintingStyle.fill;
 
     final linePaint = Paint()
       ..color = Colors.white.withValues(alpha: opacity)
       ..strokeWidth = 1.0
       ..style = PaintingStyle.stroke;
 
-    _drawText(canvas, "JUNKFEATHERS", 6, 1, opacity);
-    _drawText(canvas, "TECH", 18, 2, opacity);
-
-    _drawBird(canvas, 32, 50, 12, linePaint, whitePaint);
-    _drawBird(canvas, 96, 50, 12, linePaint, whitePaint);
-
-    if (phase != 1) {
-      int steps = phase == 0 ? 25 : 21;
-      int currentStep = (phaseProgress * (steps - 1)).floor();
-
-      int coverChance = 0;
-      if (phase == 0) {
-        coverChance = (90 - (75 * currentStep / (steps - 1))).toInt();
-      }
-      if (phase == 2) {
-        coverChance = (15 + (80 * currentStep / (steps - 1))).toInt();
-      }
-
-      final blackPaint = Paint()..color = Colors.black;
-      final fastLinePaint = Paint()
-        ..color = Colors.white.withValues(alpha: opacity);
-
-      for (int y = 0; y < 64;) {
-        int h = globalR.nextInt(9) + 2;
-        if (globalR.nextInt(100) < coverChance) {
-          canvas.drawRect(
-              Rect.fromLTWH(0, y.toDouble(), 128, h.toDouble()), blackPaint);
-        } else {
-          if (globalR.nextInt(100) < 10) {
-            canvas.drawRect(
-                Rect.fromLTWH(0, y.toDouble(), 128, 1), fastLinePaint);
-          }
-        }
-        y += h;
-      }
-    }
-
-    canvas.translate(-jitterX, -jitterY);
-
-    final scanlinePaint = Paint()
-      ..color = Colors.black.withValues(alpha: 0.3)
+    final whitePaint = Paint()
+      ..color = Colors.white.withValues(alpha: opacity)
       ..style = PaintingStyle.fill;
 
-    for (double sy = 0; sy < 64; sy += 2) {
-      canvas.drawRect(Rect.fromLTWH(0, sy, 128, 1), scanlinePaint);
-    }
+    const int textSize = 2;
+    _drawText(canvas, "JUNKFEATHERS", 4, textSize, opacity);
+    _drawText(canvas, "TECH", 22, textSize, opacity);
+
+    _drawBird(canvas, 32, 46, 12, linePaint, whitePaint);
+    _drawBird(canvas, 96, 46, 12, linePaint, whitePaint);
+
+    canvas.translate(-jitterX, -jitterY);
   }
 
   void _drawText(
@@ -601,7 +1166,7 @@ class JunkfeathersLogoPainter extends CustomPainter {
       textDirection: TextDirection.ltr,
     );
     textPainter.layout();
-    double x = (128 - textPainter.width) / 2;
+    final double x = (128 - textPainter.width) / 2;
     textPainter.paint(canvas, Offset(x, y));
   }
 
@@ -609,10 +1174,10 @@ class JunkfeathersLogoPainter extends CustomPainter {
       Paint strokePaint, Paint fillPaint) {
     canvas.drawCircle(Offset(cx, cy), r, strokePaint);
 
-    double exL = cx - (r / 2);
-    double exR = cx + (r / 2);
-    double ey = cy - (r / 4);
-    double s = 2;
+    final double exL = cx - (r / 2);
+    final double exR = cx + (r / 2);
+    final double ey = cy - (r / 4);
+    const double s = 2;
 
     canvas.drawLine(
         Offset(exL - s, ey - s), Offset(exL + s, ey + s), strokePaint);
@@ -624,10 +1189,10 @@ class JunkfeathersLogoPainter extends CustomPainter {
     canvas.drawLine(
         Offset(exR - s, ey + s), Offset(exR + s, ey - s), strokePaint);
 
-    double bx = cx;
-    double by = cy + (r / 3);
+    final double bx = cx;
+    final double by = cy + (r / 3);
 
-    Path beak = Path()
+    final Path beak = Path()
       ..moveTo(bx, by + 3)
       ..lineTo(bx - 4, by - 2)
       ..lineTo(bx + 4, by - 2)
@@ -637,7 +1202,7 @@ class JunkfeathersLogoPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant JunkfeathersLogoPainter old) =>
+  bool shouldRepaint(covariant JunkfeathersLogoMarkPainter old) =>
       old.progress != progress;
 }
 
@@ -880,6 +1445,10 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
                       const SizedBox(height: 16),
                       _MenuBtn("LOAD PROJECT", _loadProject),
                     ],
+                    const SizedBox(height: 16),
+                    _MenuBtn("SETTINGS", () {
+                      showOrpheusDeckSettingsDialog(context);
+                    }),
                   ],
                 ))));
   }
@@ -1175,7 +1744,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
   int _bpm = 120;
   bool _metronomeOn = false;
   String _metronomeSound = 'CLICK';
-  bool _headphonesConfirmed = false;
 
   final AudioRecorder _recorder = AudioRecorder();
 
@@ -1198,6 +1766,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
   final List<StreamSubscription?> _playerCompletionSubs = [null, null, null, null];
 
   double _playbackProgress = 0.0;
+  /// Cassette tape head (ms); header clock, locator/reel, and waveform playhead
+  /// all read this field from parent rebuilds (`setState` every transport tick).
   int _playbackMs = 0;
   int? _activeRecordTapeStartMs;
 
@@ -1210,10 +1780,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
   /// tape transport keeps running until every scheduled clip has finished.
   int _scheduledPlaybackCount = 0;
   int _completedPlaybackCount = 0;
-
-  /// Drives the header tape clock — updated with [_playbackMs] so the display
-  /// always repaints every transport tick (playback as well as idle seek).
-  final ValueNotifier<int> _playbackClock = ValueNotifier<int>(0);
 
   final UndoState _lastUndo = UndoState();
 
@@ -1264,8 +1830,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
       player.dispose();
     }
 
-    _playbackClock.dispose();
-
     if (_isExporting && _exportSessionId != null) {
       FFmpegKit.cancel(_exportSessionId);
     }
@@ -1311,7 +1875,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
     _playbackMs = ms.clamp(0, maxMs);
     _playbackProgress = maxMs > 0 ? _playbackMs / maxMs : 0.0;
     if (_playbackProgress > 1.0) _playbackProgress = 1.0;
-    _playbackClock.value = _playbackMs;
   }
 
   /// Single entry point for moving the tape head (transport clock + reel + dial).
@@ -1333,11 +1896,50 @@ class _RecorderScreenState extends State<RecorderScreen> {
     return maxMs;
   }
 
+  /// FFmpeg adelay baseline: shifts audio earlier on the exported timeline when
+  /// [manualLatencyAdjustMs] is positive (matches [_playbackSeekMsForTrack]).
+  int _exportAdelayMsFromTapeStart(int tapeStartMs) {
+    final m = OrpheusSettings.instance.manualLatencyAdjustMs;
+    return (tapeStartMs - m).clamp(0, tapeLengthMs);
+  }
+
+  /// Waveform lane horizontal offset only; session [trackTapeStartMs] unchanged.
+  int _waveformLaneTapeStartMs(int storedTapeStartMs) {
+    final m = OrpheusSettings.instance.manualLatencyAdjustMs;
+    return (storedTapeStartMs - m).clamp(0, tapeLengthMs);
+  }
+
   /// Per-track clip length from cached waveform (ms).
   int _trackContentDurationMs(int trackIndex) {
     final p = _trackFiles[trackIndex];
     if (p == null || !_waveformCache.containsKey(p)) return 0;
     return _waveformCache[p]!.length * 50;
+  }
+
+  /// File seek for track [trackIndex] when tape head is at [tapeHeadMs].
+  /// Applies optional per-take launch measurement ([_trackOffsets]) when latency
+  /// compensation is ON, then global [OrpheusSettings.manualLatencyAdjustMs]
+  /// (export uses the same trim via [_exportAdelayMsFromTapeStart]).
+  int _playbackSeekMsForTrack(
+    int trackIndex,
+    int tapeHeadMs,
+    int tapeStart,
+    int clipDur,
+  ) {
+    final int cap = clipDur > 0 ? clipDur : 0x7fffffff;
+    int local = (tapeHeadMs - tapeStart).clamp(0, cap);
+    if (OrpheusSettings.instance.latencyCompensationEnabled) {
+      final int off = _trackOffsets[trackIndex];
+      if (off > 0) local = max(0, local - off);
+    }
+    final int manual = OrpheusSettings.instance.manualLatencyAdjustMs;
+    local = max(0, local - manual);
+    return min(local, cap);
+  }
+
+  int _storedLatencyOffsetMs(int measuredLaunchMs) {
+    if (!OrpheusSettings.instance.latencyCompensationEnabled) return 0;
+    return measuredLaunchMs;
   }
 
   void _onTapeHeadSeekFromReel(int ms) {
@@ -1608,7 +2210,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
     _waveformCache.clear();
     _exports.clear();
-    _headphonesConfirmed = false;
     _applyTapeHeadClamped(0);
     _lastUndo.clear();
     _clickPlayerSourcePath = null;
@@ -1662,7 +2263,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
           _bpm = session.bpm;
           _metronomeOn = session.metronomeOn;
           _metronomeSound = session.metronomeSound;
-          _headphonesConfirmed = false;
         });
         _clickPlayerSourcePath = null;
       }
@@ -1967,23 +2567,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
     );
   }
 
-  Future<void> _deleteExportEntry(ExportEntry e) async {
-    if (Platform.isAndroid &&
-        e.storageUri != null &&
-        e.storageUri!.startsWith('content://')) {
-      try {
-        await _androidExportChannel
-            .invokeMethod('deleteMusicExport', {'uri': e.storageUri});
-      } catch (err) {
-        debugPrint('Orpheus Deck: deleteMusicExport $err');
-      }
-      return;
-    }
-    if (e.absolutePath != null) {
-      await _deleteExportIfExists(e.absolutePath!);
-    }
-  }
-
   Future<void> _shareExportEntry(ExportEntry e) async {
     try {
       final uriStr = e.storageUri;
@@ -2041,6 +2624,143 @@ class _RecorderScreenState extends State<RecorderScreen> {
         _showSnackbar('Saved to ${entry.displayPath}');
       }
     }
+  }
+
+  bool _exportEntrySameLogicalTarget(ExportEntry a, ExportEntry b) {
+    final ua = a.storageUri;
+    final ub = b.storageUri;
+    if (ua != null && ua.isNotEmpty && ub != null && ua == ub) return true;
+    final pa = a.absolutePath;
+    final pb = b.absolutePath;
+    if (pa != null &&
+        pb != null &&
+        pa.isNotEmpty &&
+        pb.isNotEmpty &&
+        pa == pb) {
+      return true;
+    }
+    return a.filename.toLowerCase() == b.filename.toLowerCase();
+  }
+
+  Future<_ExportBrowseSnapshot> _loadExportsBrowseSnapshot() async {
+    bool scanErrored = false;
+    final scanMaps = <Map<String, dynamic>>[];
+
+    if (Platform.isAndroid) {
+      try {
+        final dynamic raw =
+            await _androidExportChannel.invokeMethod('scanOrpheusMusicExports');
+        if (raw is List) {
+          for (final item in raw) {
+            if (item is Map) {
+              scanMaps.add(Map<String, dynamic>.from(item));
+            }
+          }
+        }
+      } catch (e, st) {
+        scanErrored = true;
+        debugPrint('Orpheus Deck: scanOrpheusMusicExports err $e\n$st');
+      }
+    }
+
+    ExportEntry scannedRow(Map<String, dynamic> m) {
+      final fn = (m['filename']?.toString() ?? '').trim();
+      final uri = m['storageUri']?.toString();
+      final sec = (m['dateAddedSec'] as num?)?.toInt();
+      final lower = fn.toLowerCase();
+      final kind = lower.contains('mastermix') ||
+              lower.contains('youtube_master')
+          ? 'MASTERMIX'
+          : 'RAW MIX';
+      final DateTime when;
+      if (sec != null) {
+        when = DateTime.fromMillisecondsSinceEpoch(sec * 1000, isUtc: true)
+            .toLocal();
+      } else {
+        when = DateTime.fromMillisecondsSinceEpoch(0);
+      }
+      return ExportEntry(
+        filename: fn,
+        displayPath: 'Music/Orpheus Deck/$fn',
+        storageUri: uri,
+        absolutePath: null,
+        kind: kind,
+        createdAt: when,
+      );
+    }
+
+    final fromScan = scanMaps
+        .map(scannedRow)
+        .where((e) => e.filename.isNotEmpty)
+        .toList();
+
+    final byUri = <String, ExportEntry>{};
+    final byName = <String, ExportEntry>{};
+    for (final e in _exports) {
+      if (e.storageUri != null) byUri[e.storageUri!] = e;
+      byName[e.filename.toLowerCase()] = e;
+    }
+
+    final merged = List<ExportEntry>.from(_exports);
+    for (final e in fromScan) {
+      if (e.storageUri != null && byUri.containsKey(e.storageUri)) continue;
+      if (byName.containsKey(e.filename.toLowerCase())) continue;
+      merged.add(e);
+    }
+    merged.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    String? footer;
+    if (merged.isEmpty) {
+      footer = 'EXPORTS SAVED TO MUSIC/ORPHEUS DECK';
+    } else if (Platform.isAndroid &&
+        scanErrored &&
+        fromScan.isEmpty) {
+      footer =
+          'EXPORT SCAN UNAVAILABLE • EXPORTS ALSO SAVED TO MUSIC/ORPHEUS DECK';
+    }
+
+    return _ExportBrowseSnapshot(entries: merged, footerHintText: footer);
+  }
+
+  Future<bool> _deleteExportBrowsedEntry(ExportEntry e) async {
+    bool removed = false;
+    if (Platform.isAndroid &&
+        e.storageUri != null &&
+        e.storageUri!.startsWith('content://')) {
+      try {
+        final ok = await _androidExportChannel
+                .invokeMethod<bool>('deleteMusicExport', {'uri': e.storageUri}) ??
+            false;
+        if (ok == true) removed = true;
+      } catch (err) {
+        debugPrint('Orpheus Deck: deleteMusicExport $err');
+      }
+    }
+    final ap = e.absolutePath;
+    if (ap != null && File(ap).existsSync()) {
+      try {
+        await _deleteExportIfExists(ap);
+        removed = true;
+      } catch (_) {}
+    }
+    if (!mounted) return removed;
+    setState(() {
+      _exports.removeWhere((x) => _exportEntrySameLogicalTarget(x, e));
+    });
+    await _saveSession();
+    if (mounted) {
+      removed
+          ? _showSnackbar('EXPORT REMOVED')
+          : _showSnackbar('DELETE FAILED OR EXPORT NOT FOUND');
+    }
+    return removed;
+  }
+
+  Future<void> _showExportsBrowseDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _ExportsBrowseHost(recorder: this),
+    );
   }
 
   Future<void> _deleteExportIfExists(String path) async {
@@ -2153,6 +2873,205 @@ class _RecorderScreenState extends State<RecorderScreen> {
     return '${n.year}-${z2(n.month)}-${z2(n.day)}_${z2(n.hour)}${z2(n.minute)}${z2(n.second)}';
   }
 
+  /// FFprobe one export input file (diagnostic only).
+  Future<void> _logExportInputFfprobe({
+    required int deckTrackIndex,
+    required int ffmpegInputIndex,
+    required String path,
+  }) async {
+    try {
+      final session = await FFprobeKit.getMediaInformation(path);
+      final info = session.getMediaInformation();
+      if (info == null) {
+        debugPrint(
+          'Orpheus Deck: EXPORT INPUT_PROBE deck=$deckTrackIndex '
+          'ffmpegInput=$ffmpegInputIndex path=$path -> no media information',
+        );
+        return;
+      }
+      final streams = info.getStreams();
+      final audioStreams =
+          streams.where((s) => s.getType() == 'audio').toList();
+      debugPrint(
+        'Orpheus Deck: EXPORT INPUT_PROBE deck=$deckTrackIndex '
+        'ffmpegInput=$ffmpegInputIndex path=$path '
+        'format=${info.getFormat()} duration=${info.getDuration()} '
+        'startTime=${info.getStartTime()} size=${info.getSize()} '
+        'audioStreamCount=${audioStreams.length}',
+      );
+      for (int s = 0; s < audioStreams.length; s++) {
+        final a = audioStreams[s];
+        debugPrint(
+          'Orpheus Deck: EXPORT INPUT_PROBE deck=$deckTrackIndex '
+          'stream#$s codec=${a.getCodec()} '
+          'sampleRate=${a.getSampleRate()} '
+          'channelLayout=${a.getChannelLayout()} '
+          'bitrate=${a.getBitrate()} timeBase=${a.getTimeBase()}',
+        );
+      }
+    } catch (e, st) {
+      debugPrint(
+        'Orpheus Deck: EXPORT INPUT_PROBE deck=$deckTrackIndex '
+        'ffmpegInput=$ffmpegInputIndex path=$path error=$e\n$st',
+      );
+    }
+  }
+
+  /// Diagnostic: synthetic 440/660/880 Hz tones at tape 0s / 5s / 10s using the
+  /// same adelay → amix → optional loudnorm mapping as [_exportMix].
+  /// Publishes Music/Orpheus Deck/export_alignment_test.wav
+  Future<void> _testExportAlignment({bool masterMix = false}) async {
+    if (_isRecording || _isPlaying) _stop();
+    if (_isExporting) {
+      _showSnackbar('ERR: EXPORT ALREADY RUNNING');
+      return;
+    }
+
+    setState(() => _isExporting = true);
+
+    const String fileName = 'export_alignment_test.wav';
+    const List<int> tapeStartsMs = [0, 5000, 10000];
+    const List<int> freqsHz = [440, 660, 880];
+    const String rawOutPad = '[export_raw]';
+    const String masterOutPad = '[export_master]';
+
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final outPath =
+          '${tempDir.path}/orpheus_alignment_test_${DateTime.now().millisecondsSinceEpoch}.wav';
+
+      final List<String> inputs = [];
+      for (final hz in freqsHz) {
+        inputs.addAll(['-f', 'lavfi', '-i', 'sine=frequency=$hz:duration=2']);
+      }
+
+      final List<String> filterParts = [];
+      for (int j = 0; j < tapeStartsMs.length; j++) {
+        final int delayMs = tapeStartsMs[j];
+        if (delayMs > 0) {
+          filterParts.add('[$j:a]adelay=$delayMs:all=1,volume=1[a$j]');
+        } else {
+          filterParts.add('[$j:a]volume=1[a$j]');
+        }
+      }
+
+      final String mixInputs =
+          List<String>.generate(tapeStartsMs.length, (j) => '[a$j]').join();
+      String filterGraph =
+          '${filterParts.join(';')};${mixInputs}amix=inputs=${tapeStartsMs.length}:duration=longest:normalize=0$rawOutPad';
+      String finalMappedPad = rawOutPad;
+      if (masterMix) {
+        filterGraph += ';${rawOutPad}loudnorm=I=-14:TP=-1:LRA=11$masterOutPad';
+        finalMappedPad = masterOutPad;
+      }
+
+      final List<String> command = [
+        ...inputs,
+        '-filter_complex',
+        filterGraph,
+        '-map',
+        finalMappedPad,
+        '-vn',
+        '-sn',
+        '-dn',
+        '-map_metadata',
+        '-1',
+        '-acodec',
+        'pcm_s16le',
+        '-ar',
+        '44100',
+        '-ac',
+        '1',
+        '-f',
+        'wav',
+        '-y',
+        outPath,
+      ];
+
+      final String cmdLogged = command
+          .map((a) => (a.contains(' ') || a.contains('"'))
+              ? '"${a.replaceAll('"', r'\"')}"'
+              : a)
+          .join(' ');
+
+      debugPrint('Orpheus Deck: TEST_EXPORT_ALIGNMENT start masterMix=$masterMix');
+      debugPrint(
+        'Orpheus Deck: TEST_EXPORT_ALIGNMENT expected: '
+        '440Hz 0-2s, silence 2-5s, 660Hz 5-7s, silence 7-10s, 880Hz 10-12s',
+      );
+      debugPrint(
+        'Orpheus Deck: TEST_EXPORT_ALIGNMENT tapeStartsMs=$tapeStartsMs '
+        'finalMappedPad=$finalMappedPad rawInputAudioMapped=false',
+      );
+      debugPrint('Orpheus Deck: TEST_EXPORT_ALIGNMENT filter_complex: $filterGraph');
+      debugPrint('Orpheus Deck: TEST_EXPORT_ALIGNMENT ffmpeg $cmdLogged');
+
+      final session = await FFmpegKit.executeWithArguments(command);
+      final returnCode = await session.getReturnCode();
+      final rcVal = returnCode?.getValue();
+      final logText = await session.getLogsAsString();
+      debugPrint('Orpheus Deck: TEST_EXPORT_ALIGNMENT ffmpeg exit=$rcVal');
+      if (logText.isNotEmpty) {
+        debugPrint('Orpheus Deck: TEST_EXPORT_ALIGNMENT ffmpeg log:\n$logText');
+      }
+
+      if (!ReturnCode.isSuccess(returnCode)) {
+        await _deleteExportIfExists(outPath);
+        if (mounted) {
+          _showSnackbar('ERR: ALIGNMENT TEST FAILED (ffmpeg $rcVal)');
+        }
+        return;
+      }
+
+      final ver = await _verifyExportedWav(outPath);
+      int outBytes = -1;
+      try {
+        final f = File(outPath);
+        if (f.existsSync()) outBytes = f.lengthSync();
+      } catch (_) {}
+      debugPrint(
+        'Orpheus Deck: TEST_EXPORT_ALIGNMENT result ok=${ver.ok} '
+        'detail=${ver.detail} duration=${ver.durationSec ?? "?"} bytes=$outBytes',
+      );
+
+      if (!ver.ok) {
+        await _deleteExportIfExists(outPath);
+        if (mounted) _showSnackbar('ERR: ALIGNMENT TEST VERIFY FAILED');
+        return;
+      }
+
+      final entry = await _finalizeExportAfterFfmpeg(
+        tempPath: outPath,
+        fileName: fileName,
+        kind: 'TEST_EXPORT_ALIGNMENT',
+      );
+      if (entry == null) {
+        if (mounted) {
+          _showSnackbar(Platform.isAndroid
+              ? 'ERR: ALIGNMENT TEST SAVE FAILED'
+              : 'ERR: ALIGNMENT TEST SAVE FAILED');
+        }
+        return;
+      }
+
+      debugPrint(
+        'Orpheus Deck: TEST_EXPORT_ALIGNMENT saved '
+        'displayPath=${entry.displayPath} uri=${entry.storageUri ?? entry.absolutePath}',
+      );
+      if (mounted) {
+        _showSnackbar(
+          'ALIGNMENT TEST SAVED\n${entry.displayPath}\n'
+          'dur=${ver.durationSec ?? "?"}s — check logcat',
+        );
+      }
+    } catch (e, st) {
+      debugPrint('Orpheus Deck: TEST_EXPORT_ALIGNMENT error $e\n$st');
+      if (mounted) _showSnackbar('ERR: ALIGNMENT TEST FAILED');
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
+    }
+  }
+
   Future<void> _exportMix(bool isMasterMix) async {
     if (_isRecording || _isPlaying) _stop();
 
@@ -2171,30 +3090,92 @@ class _RecorderScreenState extends State<RecorderScreen> {
       final tempId = DateTime.now().millisecondsSinceEpoch;
       final outPath = '${tempDir.path}/orpheus_exp_$tempId.wav';
 
-      List<String> inputs = [];
-      List<String> filterParts = [];
-      List<double> targetVolList = [];
+      final List<String> inputs = [];
+      final List<String> filterParts = [];
+      final List<int> trackDelayMs = [];
+      final List<int> trackIdxs = [];
+      final List<double> targetVolList = [];
       int activeCount = 0;
+      int expectedDurationMs = 0;
 
-      bool anySolo = _trackSolos.contains(true);
+      final bool anySolo = _trackSolos.contains(true);
+      final Set<String> seenInputPaths = {};
+
+      debugPrint(
+        'Orpheus Deck: EXPORT_REAL_PROJECT project=$_projectName '
+        'isMaster=$isMasterMix playbackMs=$_playbackMs '
+        'trackTapeStartMs=$_trackTapeStartMs',
+      );
 
       for (int i = 0; i < 4; i++) {
-        if (_trackFiles[i] != null && File(_trackFiles[i]!).existsSync()) {
-          double targetVol = 0.0;
-          if (anySolo) {
-            if (_trackSolos[i] && !_trackMutes[i]) targetVol = _trackVolumes[i];
-          } else {
-            if (!_trackMutes[i]) targetVol = _trackVolumes[i];
-          }
+        final String? path = _trackFiles[i];
+        final bool exists = path != null && File(path).existsSync();
+        final int tapeStart = _trackTapeStartMs[i];
+        final int clipDur = _trackContentDurationMs(i);
+        final int tapeEnd = tapeStart + clipDur;
 
-          if (targetVol > 0.01) {
-            inputs.add("-i");
-            inputs.add(_trackFiles[i]!);
-            targetVolList.add(targetVol);
-            activeCount++;
+        double targetVol = 0.0;
+        String skipReason = '';
+        if (!exists) {
+          skipReason = 'NO_FILE';
+        } else if (anySolo) {
+          if (_trackSolos[i] && !_trackMutes[i]) {
+            targetVol = _trackVolumes[i];
           }
+          if (targetVol <= 0.01) {
+            skipReason = _trackSolos[i] ? 'MUTED_OR_ZERO_VOL' : 'NOT_SOLOED';
+          }
+        } else {
+          if (!_trackMutes[i]) targetVol = _trackVolumes[i];
+          if (targetVol <= 0.01) skipReason = 'MUTED_OR_ZERO_VOL';
         }
+
+        final bool included = exists && targetVol > 0.01;
+
+        debugPrint(
+          'Orpheus Deck: EXPORT TRK $i '
+          'path=${path ?? "<none>"} '
+          'tapeStartMs=$tapeStart clipDurMs=$clipDur tapeEndMs=$tapeEnd '
+          'solo=${_trackSolos[i]} mute=${_trackMutes[i]} '
+          'vol=${_trackVolumes[i]} anySolo=$anySolo '
+          'included=$included${included ? '' : ' skipReason=$skipReason'}',
+        );
+
+        if (!included) continue;
+
+        final bool duplicatePath = seenInputPaths.contains(path);
+        seenInputPaths.add(path);
+        if (duplicatePath) {
+          debugPrint(
+            'Orpheus Deck: EXPORT WARN deck=$i DUPLICATE_INPUT_PATH $path',
+          );
+        }
+
+        inputs.add("-i");
+        inputs.add(path);
+        final int adelay = _exportAdelayMsFromTapeStart(tapeStart);
+        trackDelayMs.add(adelay);
+        trackIdxs.add(i);
+        targetVolList.add(targetVol);
+        final int shiftedEnd = adelay + clipDur;
+        if (tapeEnd > expectedDurationMs) expectedDurationMs = tapeEnd;
+        if (shiftedEnd > expectedDurationMs) expectedDurationMs = shiftedEnd;
+        activeCount++;
       }
+
+      for (int j = 0; j < activeCount; j++) {
+        await _logExportInputFfprobe(
+          deckTrackIndex: trackIdxs[j],
+          ffmpegInputIndex: j,
+          path: inputs[(j * 2) + 1],
+        );
+      }
+
+      debugPrint(
+        'Orpheus Deck: EXPORT_REAL inputOrder '
+        'deckTracks=$trackIdxs ffmpegDelaysMs=$trackDelayMs '
+        'tempOut=$outPath',
+      );
 
       if (activeCount == 0) {
         _showSnackbar("ERR: NO AUDIBLE TRACKS");
@@ -2202,35 +3183,57 @@ class _RecorderScreenState extends State<RecorderScreen> {
         return;
       }
 
-      for (int i = 0; i < activeCount; i++) {
-        filterParts.add("[$i:a]volume=${targetVolList[i]}[a$i]");
+      // Per-track stage: apply tape-position delay (silence prefix) then per-
+      // track volume. adelay pads silence at the START of the stream so each
+      // recording lands at its trackTapeStartMs in the final mix.
+      for (int j = 0; j < activeCount; j++) {
+        final int delayMs = trackDelayMs[j];
+        final double vol = targetVolList[j];
+        if (delayMs > 0) {
+          filterParts.add('[$j:a]adelay=$delayMs:all=1,volume=$vol[a$j]');
+        } else {
+          filterParts.add('[$j:a]volume=$vol[a$j]');
+        }
       }
 
       String filterGraph = filterParts.join(";");
-      String outPad = "[a0]";
+      const String rawOutPad = "[export_raw]";
+      const String masterOutPad = "[export_master]";
+      String finalMappedPad = rawOutPad;
 
       if (activeCount > 1) {
-        String mixInputs = "";
-        for (int i = 0; i < activeCount; i++) {
-          mixInputs += "[a$i]";
-        }
+        // amix with normalize=0 sums inputs straight (no 1/N scaling and no
+        // dropout-transition gain bumps when one delayed track ends earlier
+        // than another). duration=longest guarantees the output runs until
+        // the last audible track's tape end.
+        final String mixInputs = List<String>.generate(
+          activeCount,
+          (j) => "[a$j]",
+        ).join();
         filterGraph +=
-            ";${mixInputs}amix=inputs=$activeCount:duration=longest,volume=$activeCount[mix]";
-        outPad = "[mix]";
+            ';${mixInputs}amix=inputs=$activeCount:duration=longest:normalize=0$rawOutPad';
+      } else {
+        // Even one-track exports go through a named final pad so FFmpeg never
+        // has a chance to fall back to an unfiltered input stream.
+        filterGraph += ';[a0]anull$rawOutPad';
       }
 
       if (isMasterMix) {
-        filterGraph += ";${outPad}loudnorm=I=-14:TP=-1:LRA=11[master]";
-        outPad = "[master]";
+        filterGraph += ";${rawOutPad}loudnorm=I=-14:TP=-1:LRA=11$masterOutPad";
+        finalMappedPad = masterOutPad;
       }
 
-      List<String> command = [
+      final List<String> command = [
         ...inputs,
         "-filter_complex",
         filterGraph,
         "-map",
-        outPad,
+        finalMappedPad,
         "-vn",
+        "-sn",
+        "-dn",
+        "-map_metadata",
+        "-1",
         "-acodec",
         "pcm_s16le",
         "-ar",
@@ -2248,6 +3251,18 @@ class _RecorderScreenState extends State<RecorderScreen> {
               ? '"${a.replaceAll('"', r'\"')}"'
               : a)
           .join(' ');
+      debugPrint(
+        'Orpheus Deck: EXPORT_SUMMARY isMaster=$isMasterMix '
+        'activeCount=$activeCount activeTracks=$trackIdxs '
+        'delaysMs=$trackDelayMs manualMs=${OrpheusSettings.instance.manualLatencyAdjustMs} '
+        'vols=$targetVolList '
+        'expectedDurationMs=$expectedDurationMs tapeLengthMs=$tapeLengthMs',
+      );
+      debugPrint(
+        'Orpheus Deck: EXPORT final mapped pad: $finalMappedPad '
+        'rawInputAudioMapped=false explicitFilterOutputOnly=true',
+      );
+      debugPrint('Orpheus Deck: EXPORT filter chain: $filterGraph');
       debugPrint('Orpheus Deck: FFmpeg full command: ffmpeg $cmdLogged');
 
       FFmpegKit.executeWithArgumentsAsync(command, (session) async {
@@ -2274,8 +3289,15 @@ class _RecorderScreenState extends State<RecorderScreen> {
           }
 
           final ver = await _verifyExportedWav(outPath);
+          int outBytes = -1;
+          try {
+            final outFile = File(outPath);
+            if (outFile.existsSync()) outBytes = outFile.lengthSync();
+          } catch (_) {}
           debugPrint(
-              'Orpheus Deck: export verify ok=${ver.ok} detail=${ver.detail} duration=${ver.durationSec ?? "?"}');
+              'Orpheus Deck: EXPORT result ok=${ver.ok} detail=${ver.detail} '
+              'duration=${ver.durationSec ?? "?"} bytes=$outBytes '
+              'expectedDurationMs=$expectedDurationMs');
 
           if (!ver.ok) {
             await _deleteExportIfExists(outPath);
@@ -2289,6 +3311,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
             tempPath: outPath,
             fileName: outName,
             kind: kind,
+          );
+          debugPrint(
+            'Orpheus Deck: EXPORT_PUBLISH temp=$outPath fileName=$outName '
+            'saved=${entry?.displayPath} uri=${entry?.storageUri ?? entry?.absolutePath}',
           );
           if (entry == null) {
             if (mounted) {
@@ -2406,60 +3432,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
         });
   }
 
-  void _showExportOptionsDialog(ExportEntry entry) {
-    showDialog(
-        context: context,
-        builder: (context) {
-          return AlertDialog(
-            backgroundColor: Colors.black,
-            shape: Border.all(color: Colors.white, width: 2),
-            title: Text(entry.filename,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontFamily: 'monospace',
-                    fontSize: 12)),
-            content: Text(
-              '${entry.kind}\n${entry.displayPath}',
-              style: const TextStyle(
-                  color: Colors.white54,
-                  fontFamily: 'monospace',
-                  fontSize: 10),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () async {
-                  Navigator.pop(context);
-                  await _deleteExportEntry(entry);
-                  setState(() {
-                    _exports.removeWhere((x) => _sameExportEntry(x, entry));
-                  });
-                  _saveSession();
-                  _showSnackbar("EXPORT DELETED");
-                },
-                child: const Text("DELETE",
-                    style: TextStyle(
-                        color: Colors.white, fontFamily: 'monospace')),
-              ),
-              TextButton(
-                onPressed: () async {
-                  Navigator.pop(context);
-                  if (!_exportShareLooksValid(entry)) {
-                    _showSnackbar("ERR: EXPORT FILE INVALID OR MISSING");
-                    return;
-                  }
-                  await _shareExportEntry(entry);
-                },
-                child: const Text("SHARE",
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontFamily: 'monospace',
-                        fontWeight: FontWeight.bold)),
-              ),
-            ],
-          );
-        });
-  }
-
   bool _quickExportLooksValidSync(File file) {
     try {
       if (!file.existsSync()) return false;
@@ -2478,16 +3450,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
       return _quickExportLooksValidSync(File(e.absolutePath!));
     }
     return false;
-  }
-
-  bool _sameExportEntry(ExportEntry a, ExportEntry b) {
-    if (a.storageUri != null && b.storageUri != null) {
-      return a.storageUri == b.storageUri;
-    }
-    if (a.absolutePath != null && b.absolutePath != null) {
-      return a.absolutePath == b.absolutePath;
-    }
-    return identical(a, b);
   }
 
   Future<void> _rebuildClickWavFromDialog() async {
@@ -2712,34 +3674,20 @@ class _RecorderScreenState extends State<RecorderScreen> {
                     Navigator.pop(context);
                     _exportMix(true);
                   }),
+                  if (kDebugMode) ...[
+                    const SizedBox(height: 8),
+                    _menuButton("TEST_EXPORT_ALIGNMENT", () {
+                      Navigator.pop(context);
+                      _testExportAlignment(masterMix: false);
+                    }),
+                  ],
                   const SizedBox(height: 16),
                   Container(height: 1, color: Colors.white24),
                   const SizedBox(height: 16),
-                  const Text("EXPORTS",
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontFamily: 'monospace',
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold),
-                      textAlign: TextAlign.center),
-                  const SizedBox(height: 8),
-                  if (_exports.isEmpty)
-                    const Text("NO EXPORTS YET",
-                        style: TextStyle(
-                            color: Colors.white54,
-                            fontFamily: 'monospace',
-                            fontSize: 10),
-                        textAlign: TextAlign.center)
-                  else
-                    ..._exports.map((ExportEntry e) {
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 8.0),
-                        child: _menuButton(e.filename, () {
-                          Navigator.pop(context);
-                          _showExportOptionsDialog(e);
-                        }),
-                      );
-                    }),
+                  _menuButton("EXPORTS", () async {
+                    Navigator.pop(context);
+                    await _showExportsBrowseDialog();
+                  }),
                   const SizedBox(height: 24),
                   _menuButton("EXIT TO MENU", () {
                     _stop();
@@ -2949,7 +3897,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
     final String modeTag = _isRecording ? 'REC BACKING' : 'PLAY TRK';
     for (final i in toStart) {
       _pendingPlaybackIndices.remove(i);
+      final int tapeStart = _trackTapeStartMs[i];
+      final int clipDur = _trackContentDurationMs(i);
+      final int seekMs =
+          _playbackSeekMsForTrack(i, _playbackMs, tapeStart, clipDur);
       try {
+        _trackPlayers[i].seek(Duration(milliseconds: seekMs));
         _trackPlayers[i].play();
       } catch (e) {
         debugPrint('Orpheus Deck: $modeTag $i DELAYED_START play() err $e');
@@ -2957,7 +3910,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
       _attachCompletionListenerFor(i);
       debugPrint(
         'Orpheus Deck: $modeTag $i DELAYED_START '
-        'tapeStart=${_trackTapeStartMs[i]} playbackMs=$_playbackMs',
+        'tapeStart=$tapeStart seekMs=$seekMs offsetMs=${_trackOffsets[i]} '
+        'latencyComp=${OrpheusSettings.instance.latencyCompensationEnabled} '
+        'playbackMs=$_playbackMs',
       );
     }
   }
@@ -3066,7 +4021,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
       }
 
       if (shouldPlayNow) {
-        final int seekMs = (startMs - tapeStart).clamp(0, clipDur);
+        final int seekMs =
+            _playbackSeekMsForTrack(i, startMs, tapeStart, clipDur);
         try {
           await _trackPlayers[i].seek(Duration(milliseconds: seekMs));
         } catch (e) {
@@ -3075,6 +4031,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
         immediate.add(i);
         debugPrint(
           'Orpheus Deck: PLAY TRK $i SCHEDULED=IMMEDIATE seekMs=$seekMs '
+          'offsetMs=${_trackOffsets[i]} latencyComp='
+          '${OrpheusSettings.instance.latencyCompensationEnabled} '
           'tapeStart=$tapeStart tapeEnd=$tapeEnd',
         );
       } else {
@@ -3201,43 +4159,107 @@ class _RecorderScreenState extends State<RecorderScreen> {
     debugPrint("Orpheus Deck: TEST PLAY complete");
   }
 
-  void _showHeadphonesWarning() {
-    showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) {
-          return AlertDialog(
-            backgroundColor: Colors.black,
-            shape: Border.all(color: Colors.white, width: 2),
-            title: const Text("MONITOR NOTICE",
-                style: TextStyle(color: Colors.white, fontFamily: 'monospace')),
-            content: const Text(
-                "USE HEADPHONES FOR CLEAN RECORDING.\n"
-                "SPEAKER PLAYBACK MAY BLEED INTO THE MIC.",
-                style: TextStyle(
+  void _showRecordingCheckReminder() {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: Colors.black,
+          shape: Border.all(color: Colors.white, width: 2),
+          title: const Text(
+            'RECORDING CHECK',
+            style: TextStyle(
+              color: Colors.white,
+              fontFamily: 'monospace',
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'USE HEADPHONES FOR CLEAN RECORDING.\n'
+                  'SILENCE PHONE NOTIFICATIONS.\n'
+                  'SET LATENCY IN SETTINGS IF OVERDUBS FEEL LATE.',
+                  style: TextStyle(
                     color: Colors.white54,
                     fontFamily: 'monospace',
                     fontSize: 12,
-                    height: 1.35)),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  setState(() => _headphonesConfirmed = true);
-                  Navigator.pop(context);
-                  _record();
-                },
-                child: const Text("OK",
-                    style: TextStyle(
+                    height: 1.35,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    onPressed: () {
+                      Navigator.pop(dialogContext);
+                      showOrpheusDeckSettingsDialog(context);
+                    },
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: 4,
+                      ),
+                    ),
+                    child: const Text(
+                      'OPEN SETTINGS',
+                      style: TextStyle(
                         color: Colors.white,
                         fontFamily: 'monospace',
-                        fontWeight: FontWeight.bold)),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                final nav = Navigator.of(dialogContext);
+                await OrpheusSettings.instance
+                    .setRecordingCheckReminderEnabled(false);
+                if (!mounted) return;
+                nav.pop();
+                _record(skipRecordingCheckReminder: true);
+              },
+              child: const Text(
+                'DO NOT SHOW AGAIN',
+                style: TextStyle(
+                  color: Colors.white54,
+                  fontFamily: 'monospace',
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-            ],
-          );
-        });
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                _record(skipRecordingCheckReminder: true);
+              },
+              child: const Text(
+                'OK',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontFamily: 'monospace',
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
-  Future<void> _record() async {
+  Future<void> _record({bool skipRecordingCheckReminder = false}) async {
     if (_isRecording || _isExporting) return;
 
     int armedCount = _armedTracks.where((isArmed) => isArmed).length;
@@ -3257,8 +4279,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
 
     final bool isOverdub = _trackFiles.any((file) => file != null);
-    if (!_headphonesConfirmed) {
-      _showHeadphonesWarning();
+    if (!skipRecordingCheckReminder &&
+        OrpheusSettings.instance.recordingCheckReminderEnabled) {
+      _showRecordingCheckReminder();
       return;
     }
 
@@ -3347,8 +4370,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
         }
 
         if (shouldPlayNow) {
-          final int seekMs =
-              (recordTapeStartMs - tapeStart).clamp(0, clipDur);
+          final int seekMs = _playbackSeekMsForTrack(
+            i,
+            recordTapeStartMs,
+            tapeStart,
+            clipDur,
+          );
           try {
             await _trackPlayers[i].seek(Duration(milliseconds: seekMs));
           } catch (e) {
@@ -3357,7 +4384,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
           immediateBacking.add(i);
           debugPrint(
             'Orpheus Deck: REC BACKING TRK $i SCHEDULED=IMMEDIATE '
-            'seekMs=$seekMs tapeStart=$tapeStart tapeEnd=$tapeEnd',
+            'seekMs=$seekMs offsetMs=${_trackOffsets[i]} latencyComp='
+            '${OrpheusSettings.instance.latencyCompensationEnabled} '
+            'tapeStart=$tapeStart tapeEnd=$tapeEnd',
           );
         } else {
           try {
@@ -3377,141 +4406,137 @@ class _RecorderScreenState extends State<RecorderScreen> {
       _scheduledPlaybackCount = immediateBacking.length + pendingBacking.length;
       _completedPlaybackCount = 0;
 
-      // ── OVERDUB LAUNCH (FIXED SEQUENCING) ────────────────────────────────
-      // Strategy:
-      // 1. Prepare backing players (seek to tape head, set volume).
-      // 2. Start recorder and WAIT for confirmation.
-      // 3. Immediately start backing playback without awaiting it to finish.
-      //
-      // Concurrent just_audio (backing and/or CLICK) requires
-      // [AudioInterruptionMode.none] or the recorder yields to playback and
-      // records silence on some devices.
+      Future<void> finishRecordLaunch() async {
+        // ── OVERDUB LAUNCH (FIXED SEQUENCING) ──────────────────────────────
+        final bool clickEnabled = _metronomeOn;
+        final bool hasConcurrentPlayback = isOverdub || clickEnabled;
+        final AudioInterruptionMode recordInterruptionMode =
+            hasConcurrentPlayback
+                ? AudioInterruptionMode.none
+                : AudioInterruptionMode.pause;
 
-      final bool clickEnabled = _metronomeOn;
-      final bool hasConcurrentPlayback = isOverdub || clickEnabled;
-      final AudioInterruptionMode recordInterruptionMode = hasConcurrentPlayback
-          ? AudioInterruptionMode.none
-          : AudioInterruptionMode.pause;
-
-      debugPrint("Orpheus Deck: RECORD LAUNCH - starting recorder first");
-      debugPrint(
+        debugPrint("Orpheus Deck: RECORD LAUNCH - starting recorder first");
+        debugPrint(
           'Orpheus Deck: record isOverdub=$isOverdub clickEnabled=$clickEnabled '
           'hasConcurrentPlayback=$hasConcurrentPlayback '
-          'audioInterruption=$recordInterruptionMode');
-      final Stopwatch sw = Stopwatch();
-      sw.start();
-
-      // A. Start recorder
-      final recordCfg = _recordConfigForCurrentSession(recordInterruptionMode);
-      debugPrint(
-          'Orpheus Deck: RecordConfig json=${jsonEncode(recordCfg.toMap())}');
-      try {
-        await _recorder.start(
-          recordCfg,
-          path: path,
+          'audioInterruption=$recordInterruptionMode',
         );
+        final Stopwatch sw = Stopwatch();
+        sw.start();
+
+        final recordCfg =
+            _recordConfigForCurrentSession(recordInterruptionMode);
         debugPrint(
+            'Orpheus Deck: RecordConfig json=${jsonEncode(recordCfg.toMap())}');
+        try {
+          await _recorder.start(
+            recordCfg,
+            path: path,
+          );
+          debugPrint(
             "Orpheus Deck: Recorder start CONFIRMED at ${sw.elapsedMilliseconds}ms path=$path");
-      } catch (e, st) {
-        debugPrint(
-            "Orpheus Deck: Recorder start ERROR $e\n$st");
-        sw.stop();
-        _activeRecordTapeStartMs = null;
-        final int cm = _getMaxPlaybackDuration();
-        debugPrint(
-          'Orpheus Deck: TRANSPORT_STOP reason=RECORDER_ERROR '
-          'tapeLengthMs=$tapeLengthMs playbackMs=$_playbackMs contentMaxMs=$cm '
-          'recording=false playing=false',
-        );
-        return;
-      }
-
-      // B. Start backing playback immediately after recorder confirms.
-      // Pending backing tracks stay paused until the ticker promotes them
-      // inside [_maybeStartPendingTracks] once the recording head reaches
-      // their tapeStart.
-      if (immediateBacking.isNotEmpty) {
-        debugPrint(
-          'Orpheus Deck: Starting ${immediateBacking.length} immediate '
-          'backing players $immediateBacking (pending=$pendingBacking)',
-        );
-        // We do NOT await the futures here, just fire and forget so they play
-        // while the recorder is running.
-        for (int i in immediateBacking) {
-          _trackPlayers[i].play();
-          _attachCompletionListenerFor(i);
+        } catch (e, st) {
+          debugPrint("Orpheus Deck: Recorder start ERROR $e\n$st");
+          sw.stop();
+          _activeRecordTapeStartMs = null;
+          debugPrint(
+            'Orpheus Deck: TRANSPORT_STOP reason=RECORDER_ERROR '
+            'tapeLengthMs=$tapeLengthMs playbackMs=$_playbackMs',
+          );
+          return;
         }
-      }
 
-      if (_metronomeOn) {
-        unawaited(_tryStartClickPlayback(
-          contextTag: 'record',
-          seekMs: recordTapeStartMs,
-        ));
-      }
+        if (immediateBacking.isNotEmpty) {
+          debugPrint(
+            'Orpheus Deck: Starting ${immediateBacking.length} immediate '
+            'backing players $immediateBacking (pending=$pendingBacking)',
+          );
+          for (int i in immediateBacking) {
+            _trackPlayers[i].play();
+            _attachCompletionListenerFor(i);
+          }
+        }
 
-      sw.stop();
+        if (_metronomeOn) {
+          unawaited(_tryStartClickPlayback(
+            contextTag: 'record',
+            seekMs: recordTapeStartMs,
+          ));
+        }
 
-      // 2. Measure and store the offset.
-      final int measuredOffsetMs = sw.elapsedMilliseconds;
-      setState(() {
-        _trackOffsets[armedIndex] = measuredOffsetMs;
-      });
-      debugPrint(
-          "Orpheus Deck: RECORD LAUNCH complete | recorder+players delta: ${measuredOffsetMs}ms | offset stored for track $armedIndex");
+        sw.stop();
 
-      int recAmpLogTicks = 0;
-      int clickBleedNearBeatLoudCount = 0;
-      final int recAmpDiagTicks = clickEnabled ? 100 : 40;
-      _amplitudeSub = _recorder
-          .onAmplitudeChanged(const Duration(milliseconds: 50))
-          .listen((amp) {
-        if (recAmpLogTicks < recAmpDiagTicks) {
-          if (clickEnabled) {
-            final recMs = recAmpLogTicks * 50;
-            final mpb = 60000.0 / _bpm;
-            final phase = recMs % mpb;
-            final nearBeat = phase < 35 || phase > mpb - 35;
-            final loudish = amp.current > -38;
-            if (nearBeat && loudish) clickBleedNearBeatLoudCount++;
-            debugPrint(
+        final int measuredOffsetMs = sw.elapsedMilliseconds;
+        final int storedOffset = _storedLatencyOffsetMs(measuredOffsetMs);
+        setState(() {
+          _trackOffsets[armedIndex] = storedOffset;
+        });
+        debugPrint(
+          'Orpheus Deck: RECORD LAUNCH complete | measured=${measuredOffsetMs}ms '
+          'stored=$storedOffset latencyComp='
+          '${OrpheusSettings.instance.latencyCompensationEnabled} '
+          'manualMs=${OrpheusSettings.instance.manualLatencyAdjustMs} '
+          'track=$armedIndex',
+        );
+
+        int recAmpLogTicks = 0;
+        int clickBleedNearBeatLoudCount = 0;
+        final int recAmpDiagTicks = clickEnabled ? 100 : 40;
+        _amplitudeSub = _recorder
+            .onAmplitudeChanged(const Duration(milliseconds: 50))
+            .listen((amp) {
+          if (recAmpLogTicks < recAmpDiagTicks) {
+            if (clickEnabled) {
+              final recMs = recAmpLogTicks * 50;
+              final mpb = 60000.0 / _bpm;
+              final phase = recMs % mpb;
+              final nearBeat = phase < 35 || phase > mpb - 35;
+              final loudish = amp.current > -38;
+              if (nearBeat && loudish) clickBleedNearBeatLoudCount++;
+              debugPrint(
                 'Orpheus Deck: REC amplitude tick=$recAmpLogTicks '
                 'currentDb=${amp.current} nearBeatWindow=$nearBeat '
                 'phaseMs=${phase.toStringAsFixed(0)} bpm=$_bpm '
-                'nearBeatLoudCount=$clickBleedNearBeatLoudCount');
-            if (recAmpLogTicks == recAmpDiagTicks - 1) {
-              debugPrint(
+                'nearBeatLoudCount=$clickBleedNearBeatLoudCount',
+              );
+              if (recAmpLogTicks == recAmpDiagTicks - 1) {
+                debugPrint(
                   'Orpheus Deck: REC CLICK bleed diag (${recAmpDiagTicks * 50}ms): '
                   'nearBeat+loudishCount=$clickBleedNearBeatLoudCount/$recAmpDiagTicks '
-                  '(quiet room / covered mic: high count suggests capture-path bleed)');
-            }
-          } else {
-            debugPrint(
+                  '(quiet room / covered mic: high count suggests capture-path bleed)',
+                );
+              }
+            } else {
+              debugPrint(
                 'Orpheus Deck: REC amplitude tick=$recAmpLogTicks '
-                'currentDb=${amp.current} isOverdub=$isOverdub clickEnabled=$clickEnabled');
+                'currentDb=${amp.current} isOverdub=$isOverdub clickEnabled=$clickEnabled',
+              );
+            }
+            recAmpLogTicks++;
           }
-          recAmpLogTicks++;
-        }
-        setState(() {
-          double normalized = (amp.current + 45) / 45;
-          if (normalized < 0.02) normalized = 0.02;
-          if (normalized > 1.0) normalized = 1.0;
-          _liveAmplitudes.add(normalized);
+          setState(() {
+            double normalized = (amp.current + 45) / 45;
+            if (normalized < 0.02) normalized = 0.02;
+            if (normalized > 1.0) normalized = 1.0;
+            _liveAmplitudes.add(normalized);
+          });
         });
-      });
 
-      setState(() {
-        _isRecording = true;
-        _isPlaying = true;
-        _applyTapeHeadClamped(recordTapeStartMs);
-      });
-      debugPrint(
-        'Orpheus Deck: RECORD_TRANSPORT_START '
-        'armedTrack=$armedIndex recordTapeStartMs=$recordTapeStartMs '
-        'tapeLengthMs=$tapeLengthMs playbackMs=$_playbackMs '
-        'contentMaxMs=${_getMaxPlaybackDuration()}',
-      );
-      _startTicker();
+        setState(() {
+          _isRecording = true;
+          _isPlaying = true;
+          _applyTapeHeadClamped(recordTapeStartMs);
+        });
+        debugPrint(
+          'Orpheus Deck: RECORD_TRANSPORT_START '
+          'armedTrack=$armedIndex recordTapeStartMs=$recordTapeStartMs '
+          'tapeLengthMs=$tapeLengthMs playbackMs=$_playbackMs '
+          'contentMaxMs=${_getMaxPlaybackDuration()}',
+        );
+        _startTicker();
+      }
+
+      await finishRecordLaunch();
     }
   }
 
@@ -3701,24 +4726,26 @@ class _RecorderScreenState extends State<RecorderScreen> {
     return Scaffold(
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(8.0),
+          padding: const EdgeInsets.all(6.0),
           child: Column(
             children: [
               DeckHeader(
                 statusLabel: _deckStatus,
-                playbackClock: _playbackClock,
+                tapeTransportMs: _playbackMs,
                 projectName: _projectName,
                 onProjectTap: _showProjectMenu,
                 hasUndo: _lastUndo.hasUndo,
                 onUndo: _performUndo,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 8),
               Expanded(
                 child: Container(
                   decoration: BoxDecoration(
                     border: Border.all(color: Colors.white, width: 2),
                   ),
                   child: ListView.separated(
+                    padding: EdgeInsets.zero,
+                    physics: const ClampingScrollPhysics(),
                     itemCount: 4,
                     separatorBuilder: (context, index) => const Divider(
                       color: Colors.white24,
@@ -3733,7 +4760,17 @@ class _RecorderScreenState extends State<RecorderScreen> {
                         isRecording: _isRecording,
                         filePath: _trackFiles[index],
                         amplitudes: _getAmplitudesForTrack(index),
-                        playbackProgress: _playbackProgress,
+                        tapeStartMs: _waveformLaneTapeStartMs(
+                          (_isRecording &&
+                                  _armedTracks[index] &&
+                                  _activeRecordTapeStartMs != null)
+                              ? _activeRecordTapeStartMs!
+                              : _trackTapeStartMs[index],
+                        ),
+                        clipDurationMs: (_isRecording && _armedTracks[index])
+                            ? _liveAmplitudes.length * 50
+                            : _trackContentDurationMs(index),
+                        tapeTransportMs: _playbackMs,
                         volume: _trackVolumes[index],
                         isMuted: _trackMutes[index],
                         isSoloed: _trackSolos[index],
@@ -3749,7 +4786,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 6),
               TapeReelTransport(
                 playbackMs: _playbackMs,
                 tapeLengthMs: tapeLengthMs,
@@ -3758,7 +4795,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
                 seekEnabled: !_isExporting,
                 onTapeSeekMs: _onTapeHeadSeekFromReel,
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 6),
               TransportControls(
                 isPlaying: _isPlaying,
                 isRecording: _isRecording,
@@ -3833,10 +4870,244 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
 }
 
+class _ExportsBrowseHost extends StatefulWidget {
+  const _ExportsBrowseHost({required this.recorder});
+  final _RecorderScreenState recorder;
+
+  @override
+  State<_ExportsBrowseHost> createState() => _ExportsBrowseHostState();
+}
+
+class _ExportsBrowseHostState extends State<_ExportsBrowseHost> {
+  int _reloadNonce = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: Colors.black,
+      shape: Border.all(color: Colors.white, width: 2),
+      title: const Text(
+        'EXPORTS',
+        style: TextStyle(
+          color: Colors.white,
+          fontFamily: 'monospace',
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: 360,
+        child: FutureBuilder<_ExportBrowseSnapshot>(
+          key: ValueKey(_reloadNonce),
+          future: widget.recorder._loadExportsBrowseSnapshot(),
+          builder: (context, snap) {
+            if (snap.connectionState == ConnectionState.waiting && !snap.hasData) {
+              return const Center(
+                child: SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                ),
+              );
+            }
+            if (snap.hasError) {
+              return const Text(
+                'EXPORTS SAVED TO MUSIC/ORPHEUS DECK',
+                style: TextStyle(
+                  color: Colors.white54,
+                  fontFamily: 'monospace',
+                  fontSize: 10,
+                  height: 1.35,
+                ),
+              );
+            }
+            final data = snap.data!;
+            if (data.entries.isEmpty) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'NO EXPORTS IN HISTORY',
+                    style: TextStyle(
+                      color: Colors.white54,
+                      fontFamily: 'monospace',
+                      fontSize: 11,
+                    ),
+                  ),
+                  if (data.footerHintText != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      data.footerHintText!,
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontFamily: 'monospace',
+                        fontSize: 9,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ],
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: data.entries.length,
+                    separatorBuilder: (_, __) => const Divider(
+                      color: Colors.white24,
+                      height: 1,
+                      thickness: 1,
+                    ),
+                    itemBuilder: (ctx, i) {
+                      final e = data.entries[i];
+                      final ts = _formatExportDateTime(e.createdAt);
+                      final canDelete = (e.storageUri != null &&
+                              e.storageUri!.startsWith('content://')) ||
+                          (e.absolutePath != null &&
+                              File(e.absolutePath!).existsSync());
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    e.filename,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontFamily: 'monospace',
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '${e.kind} • $ts',
+                                    style: const TextStyle(
+                                      color: Colors.white54,
+                                      fontFamily: 'monospace',
+                                      fontSize: 9,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                TextButton(
+                                  onPressed: () =>
+                                      widget.recorder._shareExportEntry(e),
+                                  style: TextButton.styleFrom(
+                                    minimumSize: Size.zero,
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    foregroundColor: Colors.white,
+                                  ),
+                                  child: const Text(
+                                    'SHARE',
+                                    style: TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: () => widget.recorder
+                                      ._tryOpenExportLocation(e),
+                                  style: TextButton.styleFrom(
+                                    minimumSize: Size.zero,
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    foregroundColor: Colors.white70,
+                                  ),
+                                  child: const Text(
+                                    'OPEN',
+                                    style: TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                                ),
+                                if (canDelete)
+                                  TextButton(
+                                    onPressed: () async {
+                                      await widget.recorder
+                                          ._deleteExportBrowsedEntry(e);
+                                      if (mounted) {
+                                        setState(() => _reloadNonce++);
+                                      }
+                                    },
+                                    style: TextButton.styleFrom(
+                                      minimumSize: Size.zero,
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 2),
+                                      foregroundColor: Colors.white38,
+                                    ),
+                                    child: const Text(
+                                      'DELETE',
+                                      style: TextStyle(
+                                        fontFamily: 'monospace',
+                                        fontSize: 10,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                if (data.footerHintText != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    data.footerHintText!,
+                    style: const TextStyle(
+                      color: Colors.white38,
+                      fontFamily: 'monospace',
+                      fontSize: 9,
+                      height: 1.35,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ],
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text(
+            'CLOSE',
+            style: TextStyle(
+              color: Colors.white,
+              fontFamily: 'monospace',
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class DeckHeader extends StatelessWidget {
   final String statusLabel;
-  /// Tape transport position (ms), aligned with the reel / slider clock.
-  final ValueListenable<int> playbackClock;
+  /// Same value as recorder `_playbackMs` (tape transport clock).
+  final int tapeTransportMs;
   final String projectName;
   final VoidCallback onProjectTap;
   final bool hasUndo;
@@ -3845,7 +5116,7 @@ class DeckHeader extends StatelessWidget {
   const DeckHeader({
     super.key,
     required this.statusLabel,
-    required this.playbackClock,
+    required this.tapeTransportMs,
     required this.projectName,
     required this.onProjectTap,
     this.hasUndo = false,
@@ -3855,7 +5126,7 @@ class DeckHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.black,
         border: Border.all(color: Colors.white, width: 3),
@@ -3878,7 +5149,7 @@ class DeckHeader extends StatelessWidget {
                     letterSpacing: 2,
                   ),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 Row(
                   children: [
                     Expanded(
@@ -3949,25 +5220,15 @@ class DeckHeader extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              ValueListenableBuilder<int>(
-                valueListenable: playbackClock,
-                builder: (context, ms, _) {
-                  final int totalSec = ms ~/ 1000;
-                  final m =
-                      (totalSec ~/ 60).toString().padLeft(2, '0');
-                  final s =
-                      (totalSec % 60).toString().padLeft(2, '0');
-                  return Text(
-                    '$m:$s',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 32,
-                      fontFamily: 'monospace',
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 4,
-                    ),
-                  );
-                },
+              Text(
+                _tapeClockMmSs(tapeTransportMs),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 32,
+                  fontFamily: 'monospace',
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 4,
+                ),
               ),
               Row(
                 children: [
@@ -4002,7 +5263,10 @@ class TrackStrip extends StatelessWidget {
   final bool isRecording;
   final String? filePath;
   final List<double> amplitudes;
-  final double playbackProgress;
+  final int tapeStartMs;
+  final int clipDurationMs;
+  /// Same recorder `_playbackMs` as reel / header (transport playhead).
+  final int tapeTransportMs;
 
   final double volume;
   final bool isMuted;
@@ -4023,7 +5287,9 @@ class TrackStrip extends StatelessWidget {
     required this.isRecording,
     required this.filePath,
     required this.amplitudes,
-    required this.playbackProgress,
+    required this.tapeStartMs,
+    required this.clipDurationMs,
+    required this.tapeTransportMs,
     required this.volume,
     required this.isMuted,
     required this.isSoloed,
@@ -4054,7 +5320,7 @@ class TrackStrip extends StatelessWidget {
         : "";
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       child: Column(
         children: [
           Row(
@@ -4118,7 +5384,7 @@ class TrackStrip extends StatelessWidget {
               ),
               Expanded(
                 child: Container(
-                  height: 40,
+                  height: 34,
                   decoration: BoxDecoration(
                     color: Colors.black,
                     border: Border.all(color: Colors.white54, width: 1),
@@ -4128,7 +5394,10 @@ class TrackStrip extends StatelessWidget {
                     child: WaveformDisplay(
                       amplitudes: amplitudes,
                       isLive: isRecording && isArmed,
-                      playbackProgress: playbackProgress,
+                      tapeStartMs: tapeStartMs,
+                      clipDurationMs: clipDurationMs,
+                      playbackMs: tapeTransportMs,
+                      tapeLengthMs: tapeLengthMs,
                       isActive: _isWaveformActive,
                     ),
                   ),
@@ -4160,7 +5429,7 @@ class TrackStrip extends StatelessWidget {
                 ),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 5),
           Row(
             children: [
               const SizedBox(width: 65),
@@ -4245,17 +5514,41 @@ class TrackStrip extends StatelessWidget {
   }
 }
 
+/// Max-pool [src] down to [targetCount] bars for tape-lane painting.
+List<double> _downsampleWaveformForLane(List<double> src, int targetCount) {
+  if (src.isEmpty || targetCount <= 0) return const [];
+  if (targetCount >= src.length) return src;
+  final out = <double>[];
+  final double chunk = src.length / targetCount;
+  for (int i = 0; i < targetCount; i++) {
+    final int start = (i * chunk).floor();
+    final int end = min(((i + 1) * chunk).ceil(), src.length);
+    double peak = 0;
+    for (int j = start; j < end; j++) {
+      if (src[j] > peak) peak = src[j];
+    }
+    out.add(peak);
+  }
+  return out;
+}
+
 class WaveformDisplay extends StatelessWidget {
   final List<double> amplitudes;
   final bool isLive;
-  final double playbackProgress;
+  final int tapeStartMs;
+  final int clipDurationMs;
+  final int playbackMs;
+  final int tapeLengthMs;
   final bool isActive;
 
   const WaveformDisplay({
     super.key,
     required this.amplitudes,
     this.isLive = false,
-    this.playbackProgress = 0.0,
+    this.tapeStartMs = 0,
+    this.clipDurationMs = 0,
+    this.playbackMs = 0,
+    required this.tapeLengthMs,
     this.isActive = true,
   });
 
@@ -4268,7 +5561,10 @@ class WaveformDisplay extends StatelessWidget {
           painter: WaveformPainter(
             amplitudes: amplitudes,
             isLive: isLive,
-            playbackProgress: playbackProgress,
+            tapeStartMs: tapeStartMs,
+            clipDurationMs: clipDurationMs,
+            playbackMs: playbackMs,
+            tapeLengthMs: tapeLengthMs,
             isActive: isActive,
           ),
         );
@@ -4277,103 +5573,106 @@ class WaveformDisplay extends StatelessWidget {
   }
 }
 
+/// Fifteen-minute tape lane: waveform only between [tapeStartMs, tapeEndMs].
 class WaveformPainter extends CustomPainter {
   final List<double> amplitudes;
   final bool isLive;
-  final double playbackProgress;
+  final int tapeStartMs;
+  final int clipDurationMs;
+  final int playbackMs;
+  final int tapeLengthMs;
   final bool isActive;
 
   WaveformPainter({
     required this.amplitudes,
     required this.isLive,
-    required this.playbackProgress,
+    required this.tapeStartMs,
+    required this.clipDurationMs,
+    required this.playbackMs,
+    required this.tapeLengthMs,
     required this.isActive,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = isActive ? Colors.white : Colors.white24
-      ..strokeWidth = 2.0
-      ..strokeCap = StrokeCap.round;
+    final double w = size.width;
+    final double h = size.height;
+    final double midY = h / 2;
+    final int tapeLen = max(1, tapeLengthMs);
 
-    final playheadPaint = Paint()
-      ..color = Colors.white
-      ..strokeWidth = 2.0;
+    final Paint baselinePaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.14)
+      ..strokeWidth = 1.0;
+    canvas.drawLine(Offset(0, midY), Offset(w, midY), baselinePaint);
 
-    final double midY = size.height / 2;
-
-    if (amplitudes.isEmpty) {
-      canvas.drawLine(Offset(0, midY), Offset(size.width, midY), paint);
-      return;
+    // Subtle minute ticks — tape feel, not a DAW grid.
+    for (int m = 1; m < 15; m++) {
+      final double x = w * (m / 15.0);
+      canvas.drawLine(
+        Offset(x, midY - 2),
+        Offset(x, midY + 2),
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.10)
+          ..strokeWidth = 1,
+      );
     }
 
-    final int maxVisibleBars = (size.width / 4).floor();
+    final int effectiveClipMs = clipDurationMs > 0
+        ? clipDurationMs
+        : (amplitudes.isEmpty ? 0 : amplitudes.length * 50);
 
-    if (isLive) {
-      int startIndex = amplitudes.length > maxVisibleBars
-          ? amplitudes.length - maxVisibleBars
-          : 0;
-      List<double> visibleAmps = amplitudes.sublist(startIndex);
+    if (effectiveClipMs > 0 && amplitudes.isNotEmpty) {
+      final double xStart = (tapeStartMs / tapeLen) * w;
+      final double xEnd =
+          ((tapeStartMs + effectiveClipMs) / tapeLen) * w;
+      final double clipLeft = xStart.clamp(0.0, w);
+      final double clipRight = xEnd.clamp(clipLeft, w);
+      final double clipW = clipRight - clipLeft;
 
-      double startX = size.width;
-      for (int i = visibleAmps.length - 1; i >= 0; i--) {
-        double amp = visibleAmps[i];
-        double barHeight = amp * size.height;
-        if (barHeight < 2) barHeight = 2;
+      if (clipW >= 1.0) {
+        final Paint wavePaint = Paint()
+          ..color = isActive ? Colors.white : Colors.white24
+          ..strokeWidth = 1.5
+          ..strokeCap = StrokeCap.round;
 
-        canvas.drawLine(
-          Offset(startX, midY - barHeight / 2),
-          Offset(startX, midY + barHeight / 2),
-          paint,
-        );
-        startX -= 4.0;
-      }
-    } else {
-      List<double> renderAmps = [];
+        final int maxBars = max(1, (clipW / 3).floor());
+        final List<double> bars =
+            _downsampleWaveformForLane(amplitudes, maxBars);
+        final double step = clipW / bars.length;
 
-      if (amplitudes.length > maxVisibleBars) {
-        int chunkSize = (amplitudes.length / maxVisibleBars).ceil();
-        for (int i = 0; i < amplitudes.length; i += chunkSize) {
-          double maxVal = 0;
-          for (int j = i; j < i + chunkSize && j < amplitudes.length; j++) {
-            if (amplitudes[j] > maxVal) maxVal = amplitudes[j];
-          }
-          renderAmps.add(maxVal);
+        for (int i = 0; i < bars.length; i++) {
+          final double amp = bars[i];
+          if (amp <= 0.001) continue;
+          double barHeight = amp * h * 0.92;
+          if (barHeight < 2) barHeight = 2;
+          final double x = clipLeft + (i + 0.5) * step;
+          canvas.drawLine(
+            Offset(x, midY - barHeight / 2),
+            Offset(x, midY + barHeight / 2),
+            wavePaint,
+          );
         }
-      } else {
-        renderAmps = amplitudes;
-      }
-
-      double step = size.width / renderAmps.length;
-      for (int i = 0; i < renderAmps.length; i++) {
-        double amp = renderAmps[i];
-        double barHeight = amp * size.height;
-        if (barHeight < 2) barHeight = 2;
-        double x = i * step;
-
-        canvas.drawLine(
-          Offset(x, midY - barHeight / 2),
-          Offset(x, midY + barHeight / 2),
-          paint,
-        );
-      }
-
-      if (playbackProgress > 0.0 && playbackProgress <= 1.0 && isActive) {
-        double playheadX = playbackProgress * size.width;
-        canvas.drawLine(
-          Offset(playheadX, 0),
-          Offset(playheadX, size.height),
-          playheadPaint,
-        );
       }
     }
+
+    // Shared tape playhead — all lanes, idle/play/record/seek.
+    final double playheadX =
+        (playbackMs / tapeLen).clamp(0.0, 1.0) * w;
+    canvas.drawLine(
+      Offset(playheadX, 0),
+      Offset(playheadX, h),
+      Paint()
+        ..color = Colors.white.withValues(alpha: isActive ? 1.0 : 0.72)
+        ..strokeWidth = 1.5,
+    );
   }
 
   @override
   bool shouldRepaint(covariant WaveformPainter oldDelegate) {
     return oldDelegate.amplitudes.length != amplitudes.length ||
-        oldDelegate.playbackProgress != playbackProgress ||
+        oldDelegate.playbackMs != playbackMs ||
+        oldDelegate.tapeStartMs != tapeStartMs ||
+        oldDelegate.clipDurationMs != clipDurationMs ||
         oldDelegate.isActive != isActive ||
         oldDelegate.isLive != isLive;
   }
@@ -4404,7 +5703,7 @@ class TransportControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.black,
         border: Border.all(color: Colors.white, width: 3),

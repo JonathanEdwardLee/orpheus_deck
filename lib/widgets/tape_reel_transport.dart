@@ -2,6 +2,9 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+/// Horizontal inset so the tape locator isn’t flush with the phone bezel.
+const double kTapeDialTrackHorizontalInset = 22;
+
 /// Two-part transport: **tape position window** (tuner / locator) +
 /// **cassette reel window** (emotional mechanism). Not a DAW timeline.
 class TapeReelTransport extends StatefulWidget {
@@ -104,7 +107,7 @@ class _TapeReelTransportState extends State<TapeReelTransport>
           transportActive: _spinning,
           onSeekDx: _seekFromLocalDx,
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         _CassetteMechanismPanel(
           progress: _progress,
           spinning: _spinning,
@@ -137,7 +140,7 @@ class _TapePositionPanel extends StatelessWidget {
     const labelH = 10.0;
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(8, 6, 8, 5),
+      padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
       decoration: BoxDecoration(
         color: Colors.black,
         border: Border.all(color: Colors.white, width: 2),
@@ -146,28 +149,32 @@ class _TapePositionPanel extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          SizedBox(
-            height: trackH,
-            child: LayoutBuilder(
-              builder: (context, c) {
-                final w = c.maxWidth;
-                return GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTapDown: seekEnabled
-                      ? (e) => onSeekDx(e.localPosition.dx, w)
-                      : null,
-                  onHorizontalDragUpdate: seekEnabled
-                      ? (d) => onSeekDx(d.localPosition.dx, w)
-                      : null,
-                  child: CustomPaint(
-                    size: Size(w, trackH),
-                    painter: _TapeLocatorTrackPainter(
-                      progress: progress,
-                      transportActive: transportActive,
+          Padding(
+            padding: const EdgeInsets.symmetric(
+                horizontal: kTapeDialTrackHorizontalInset),
+            child: SizedBox(
+              height: trackH,
+              child: LayoutBuilder(
+                builder: (context, c) {
+                  final w = c.maxWidth;
+                  return GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTapDown: seekEnabled
+                        ? (e) => onSeekDx(e.localPosition.dx, w)
+                        : null,
+                    onHorizontalDragUpdate: seekEnabled
+                        ? (d) => onSeekDx(d.localPosition.dx, w)
+                        : null,
+                    child: CustomPaint(
+                      size: Size(w, trackH),
+                      painter: _TapeLocatorTrackPainter(
+                        progress: progress,
+                        transportActive: transportActive,
+                      ),
                     ),
-                  ),
-                );
-              },
+                  );
+                },
+              ),
             ),
           ),
           SizedBox(
