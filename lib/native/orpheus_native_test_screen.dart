@@ -21,17 +21,32 @@ class OrpheusNativeTestScreen extends StatefulWidget {
 class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
   static const int _n1RecordMs = 2500;
 
+  static const TextStyle _mono = TextStyle(
+    fontFamily: 'monospace',
+    fontSize: 11,
+    height: 1.4,
+  );
+
+  static const TextStyle _monoSmall = TextStyle(
+    fontFamily: 'monospace',
+    fontSize: 10,
+    height: 1.35,
+    color: Colors.white38,
+  );
+
   bool _busy = false;
-  String _log = 'Ready.';
+  bool _showRawDetails = false;
+  String _status = 'Ready.';
   OrpheusNativeDiagnosticsData? _n1Diag;
   OrpheusDuplexDiagnosticsData? _n2Diag;
 
   Future<void> _runHandshake() async {
     setState(() {
       _busy = true;
-      _log = 'Running N1 Oboe handshake…';
+      _status = 'Running N1 Oboe handshake…';
       _n1Diag = null;
       _n2Diag = null;
+      _showRawDetails = false;
     });
     try {
       final diag = await OrpheusNativeAudio.instance.runHandshake(
@@ -41,15 +56,13 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
       if (!mounted) return;
       setState(() {
         _n1Diag = diag;
-        _log = 'N1 success.\n'
-            'WAV (~${(_n1RecordMs / 1000).toStringAsFixed(1)} s record): $path\n\n'
-            '${OrpheusNativeLabels.formatDiagnosticsSummary(diag)}';
+        _status = 'N1 complete.\nWAV (~${(_n1RecordMs / 1000).toStringAsFixed(1)} s): $path';
       });
     } catch (e, st) {
       debugPrint('Orpheus N1 handshake failed: $e\n$st');
       if (!mounted) return;
       setState(() {
-        _log = 'N1 failed: $e';
+        _status = 'N1 failed: $e';
       });
     } finally {
       if (mounted) {
@@ -61,8 +74,9 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
   Future<void> _runDuplex() async {
     setState(() {
       _busy = true;
-      _log = 'Running N2 full-duplex overdub…';
+      _status = 'Running N2 full-duplex + N2B timing…';
       _n2Diag = null;
+      _showRawDetails = false;
     });
     try {
       final diag = await OrpheusNativeAudio.instance.runDuplexTest();
@@ -70,17 +84,13 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
       if (!mounted) return;
       setState(() {
         _n2Diag = diag;
-        _log = 'N2 success.\n'
-            'Backing: 6 clicks / 6 s generated natively (48 kHz mono).\n'
-            'Recorded WAV: $path\n\n'
-            '${OrpheusNativeLabels.formatDuplexSummary(diag)}\n\n'
-            '${OrpheusNativeLabels.formatTimingAnalysis(diag)}';
+        _status = 'N2 complete.\nRecorded WAV: $path';
       });
     } catch (e, st) {
       debugPrint('Orpheus N2 duplex failed: $e\n$st');
       if (!mounted) return;
       setState(() {
-        _log = 'N2 failed: $e';
+        _status = 'N2 failed: $e';
       });
     } finally {
       if (mounted) {
@@ -104,10 +114,157 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
     );
   }
 
+  Widget _sectionTitle(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 12, bottom: 6),
+      child: Text(
+        text,
+        style: _mono.copyWith(
+          color: Colors.white54,
+          fontSize: 10,
+          letterSpacing: 1,
+        ),
+      ),
+    );
+  }
+
+  Widget _summaryLine(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Text(
+        '$label: $value',
+        style: _mono.copyWith(color: Colors.white70),
+      ),
+    );
+  }
+
+  Widget _buildN1Summary(OrpheusNativeDiagnosticsData d) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _sectionTitle('N1 SUMMARY'),
+        _summaryLine('API', OrpheusNativeLabels.apiUsed(d.apiUsed)),
+        _summaryLine(
+          'Performance',
+          OrpheusNativeLabels.performanceMode(d.actualPerformanceMode),
+        ),
+        _summaryLine(
+          'Sharing',
+          OrpheusNativeLabels.sharingMode(d.actualSharingMode),
+        ),
+        _summaryLine('Sample rate', '${d.actualSampleRate} Hz'),
+        _summaryLine('XRuns', '${d.xRunCount}'),
+        _summaryLine('Burst / buffer', '${d.framesPerBurst} / ${d.bufferSizeInFrames}'),
+      ],
+    );
+  }
+
+  Widget _buildN2Summary(OrpheusDuplexDiagnosticsData d) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _sectionTitle('N2 STREAM SUMMARY'),
+        _summaryLine('API', OrpheusNativeLabels.apiUsed(d.apiUsed)),
+        _summaryLine(
+          'Performance',
+          OrpheusNativeLabels.performanceMode(d.performanceMode),
+        ),
+        _summaryLine(
+          'Sharing',
+          OrpheusNativeLabels.sharingMode(d.sharingMode),
+        ),
+        _summaryLine('Sample rate', '${d.sampleRate} Hz'),
+        _summaryLine('XRuns', '${d.xRunCount}'),
+        _summaryLine('Burst / buffer', '${d.framesPerBurst} / ${d.bufferSizeInFrames}'),
+        const SizedBox(height: 8),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.white24),
+            color: Colors.white.withValues(alpha: 0.06),
+          ),
+          child: Text(
+            OrpheusNativeLabels.formatTimingAnalysis(d),
+            style: _mono.copyWith(
+              color: d.analysisSuccess == 1 ? Colors.white : Colors.orangeAccent,
+              fontWeight: FontWeight.bold,
+              height: 1.45,
+            ),
+          ),
+        ),
+        if (d.analysisSuccess == 1) ...[
+          const SizedBox(height: 8),
+          _summaryLine(
+            'Clicks',
+            '${d.clicksDetected} / ${d.clicksExpected}',
+          ),
+          _summaryLine('Median offset', '${d.medianOffsetSamples} samples'),
+          _summaryLine(
+            'Median offset (display)',
+            '${d.medianOffsetMs.toStringAsFixed(1)} ms',
+          ),
+          _summaryLine('Spread', '${d.spreadSamples} samples'),
+          _summaryLine('Confidence', '${d.confidencePercent}%'),
+          _summaryLine(
+            'recordLatencyOffsetSamples',
+            '${d.recordLatencyOffsetSamples}',
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildRawDetails() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _showRawDetails = !_showRawDetails),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Row(
+              children: [
+                Icon(
+                  _showRawDetails ? Icons.expand_less : Icons.expand_more,
+                  color: Colors.white54,
+                  size: 20,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'RAW DETAILS',
+                  style: _mono.copyWith(
+                    color: Colors.white54,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_showRawDetails) ...[
+          if (_n1Diag != null)
+            Text(
+              'N1 raw:\n${_rawN1Block(_n1Diag!)}',
+              style: _monoSmall,
+            ),
+          if (_n1Diag != null && _n2Diag != null) const SizedBox(height: 12),
+          if (_n2Diag != null)
+            Text(
+              'N2 raw:\n${_rawN2Block(_n2Diag!)}',
+              style: _monoSmall,
+            ),
+        ],
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final n1Path = OrpheusNativeAudio.instance.lastWavPath;
     final n2Path = OrpheusNativeAudio.instance.lastN2WavPath;
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -119,12 +276,11 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
           style: TextStyle(fontFamily: 'monospace', fontSize: 14),
         ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+      body: SafeArea(
+        child: ListView(
+          padding: EdgeInsets.fromLTRB(16, 8, 16, 16 + bottomInset),
           children: [
-            const Text(
+            Text(
               'Dev-only native Oboe tests.\n'
               'Does not affect the main four-track recorder.\n\n'
               'N1 RECORDS A SHORT NATIVE TEST WAV.\n'
@@ -132,12 +288,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
               'N2B MEASURES CLICK ALIGNMENT IN THE RECORDED WAV (ENGINEERING).\n'
               'USE PHONE SPEAKER SO THE MIC CAN HEAR CLICKS.\n'
               'NEITHER USES YOUR CURRENT PROJECT OR FOUR-TRACK SESSION.',
-              style: TextStyle(
-                color: Colors.white54,
-                fontFamily: 'monospace',
-                fontSize: 11,
-                height: 1.4,
-              ),
+              style: _mono.copyWith(color: Colors.white54),
             ),
             const SizedBox(height: 16),
             FilledButton(
@@ -171,17 +322,15 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
             ),
             const SizedBox(height: 10),
             if (n1Path != null)
-              Wrap(
-                spacing: 8,
-                children: [
-                  TextButton(
-                    onPressed: () => _openWav(n1Path),
-                    child: const Text(
-                      'OPEN N1 WAV',
-                      style: TextStyle(fontFamily: 'monospace'),
-                    ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  onPressed: () => _openWav(n1Path),
+                  child: const Text(
+                    'OPEN N1 WAV',
+                    style: TextStyle(fontFamily: 'monospace'),
                   ),
-                ],
+                ),
               ),
             if (n2Path != null)
               Wrap(
@@ -203,43 +352,17 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
                   ),
                 ],
               ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: SingleChildScrollView(
-                child: Text(
-                  _log,
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontFamily: 'monospace',
-                    fontSize: 11,
-                    height: 1.45,
-                  ),
-                ),
-              ),
+            const SizedBox(height: 8),
+            _sectionTitle('STATUS'),
+            Text(
+              _status,
+              style: _mono.copyWith(color: Colors.white70),
             ),
-            if (_n1Diag != null) ...[
-              const Divider(color: Colors.white24),
-              Text(
-                'N1 raw:\n${_rawN1Block(_n1Diag!)}',
-                style: const TextStyle(
-                  color: Colors.white38,
-                  fontFamily: 'monospace',
-                  fontSize: 10,
-                  height: 1.35,
-                ),
-              ),
-            ],
-            if (_n2Diag != null) ...[
-              const Divider(color: Colors.white24),
-              Text(
-                'N2 raw:\n${_rawN2Block(_n2Diag!)}',
-                style: const TextStyle(
-                  color: Colors.white38,
-                  fontFamily: 'monospace',
-                  fontSize: 10,
-                  height: 1.35,
-                ),
-              ),
+            if (_n1Diag != null) _buildN1Summary(_n1Diag!),
+            if (_n2Diag != null) _buildN2Summary(_n2Diag!),
+            if (_n1Diag != null || _n2Diag != null) ...[
+              const Divider(color: Colors.white24, height: 24),
+              _buildRawDetails(),
             ],
           ],
         ),
