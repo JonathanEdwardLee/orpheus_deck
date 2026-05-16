@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
+import 'orpheus_native_duplex_bindings.dart';
+
 /// Dart copy of native diagnostics (safe after FFI buffer is freed).
 class OrpheusNativeDiagnosticsData {
   const OrpheusNativeDiagnosticsData({
@@ -122,7 +124,7 @@ final class OrpheusStreamDiagnostics extends Struct {
 
 /// Loads liborpheus_native.so (Android N1 Oboe handshake).
 class OrpheusNativeBindings {
-  OrpheusNativeBindings._(this._lib);
+  OrpheusNativeBindings._(this.lib);
 
   static OrpheusNativeBindings? _instance;
 
@@ -140,22 +142,22 @@ class OrpheusNativeBindings {
     _instance = null;
   }
 
-  final DynamicLibrary _lib;
+  final DynamicLibrary lib;
 
-  late final int Function() init = _lib
+  late final int Function() init = lib
       .lookup<NativeFunction<Int32 Function()>>('orpheus_native_init')
       .asFunction();
 
-  late final int Function() openStreams = _lib
+  late final int Function() openStreams = lib
       .lookup<NativeFunction<Int32 Function()>>('orpheus_native_open_streams')
       .asFunction();
 
-  late final int Function() playImpulse = _lib
+  late final int Function() playImpulse = lib
       .lookup<NativeFunction<Int32 Function()>>('orpheus_native_play_impulse')
       .asFunction();
 
   late final int Function(Pointer<Utf8> wavPath, int durationMs) startRecord =
-      _lib
+      lib
           .lookup<
               NativeFunction<
                   Int32 Function(Pointer<Utf8> wavPath, Int32 durationMs)>>(
@@ -163,12 +165,12 @@ class OrpheusNativeBindings {
           )
           .asFunction();
 
-  late final int Function() stopRecord = _lib
+  late final int Function() stopRecord = lib
       .lookup<NativeFunction<Int32 Function()>>('orpheus_native_stop_record')
       .asFunction();
 
   late final void Function(Pointer<OrpheusStreamDiagnostics> out)
-      getDiagnostics = _lib
+      getDiagnostics = lib
           .lookup<
               NativeFunction<
                   Void Function(Pointer<OrpheusStreamDiagnostics> out)>>(
@@ -176,11 +178,11 @@ class OrpheusNativeBindings {
           )
           .asFunction();
 
-  late final void Function() shutdown = _lib
+  late final void Function() shutdown = lib
       .lookup<NativeFunction<Void Function()>>('orpheus_native_shutdown')
       .asFunction();
 
-  late final Pointer<Utf8> Function() lastError = _lib
+  late final Pointer<Utf8> Function() lastError = lib
       .lookup<NativeFunction<Pointer<Utf8> Function()>>(
         'orpheus_native_last_error',
       )
@@ -220,4 +222,76 @@ class OrpheusNativeBindings {
   }
 
   String readLastError() => lastError().toDartString();
+
+  late final int Function() n2Init = lib
+      .lookup<NativeFunction<Int32 Function()>>('orpheus_native_n2_init')
+      .asFunction();
+
+  late final int Function() n2OpenStreams = lib
+      .lookup<NativeFunction<Int32 Function()>>(
+        'orpheus_native_n2_open_streams',
+      )
+      .asFunction();
+
+  late final int Function(Pointer<Utf8> recordPath) n2StartDuplex = lib
+      .lookup<NativeFunction<Int32 Function(Pointer<Utf8> recordPath)>>(
+        'orpheus_native_n2_start_duplex',
+      )
+      .asFunction();
+
+  late final int Function() n2IsComplete = lib
+      .lookup<NativeFunction<Int32 Function()>>(
+        'orpheus_native_n2_is_complete',
+      )
+      .asFunction();
+
+  late final void Function(Pointer<OrpheusDuplexDiagnostics> out)
+      n2GetDiagnostics = lib
+          .lookup<
+              NativeFunction<
+                  Void Function(Pointer<OrpheusDuplexDiagnostics> out)>>(
+            'orpheus_native_n2_get_diagnostics',
+          )
+          .asFunction();
+
+  late final void Function() n2Shutdown = lib
+      .lookup<NativeFunction<Void Function()>>('orpheus_native_n2_shutdown')
+      .asFunction();
+
+  OrpheusDuplexDiagnosticsData readDuplexDiagnostics() {
+    final ptr = calloc<OrpheusDuplexDiagnostics>();
+    try {
+      n2GetDiagnostics(ptr);
+      final d = ptr.ref;
+      return OrpheusDuplexDiagnosticsData(
+        sampleRate: d.sampleRate,
+        framesPerBurst: d.framesPerBurst,
+        bufferSizeInFrames: d.bufferSizeInFrames,
+        xRunCount: d.xRunCount,
+        apiUsed: d.apiUsed,
+        performanceMode: d.performanceMode,
+        sharingMode: d.sharingMode,
+        outputStreamOpened: d.outputStreamOpened,
+        inputStreamOpened: d.inputStreamOpened,
+        wavWriteSuccess: d.wavWriteSuccess,
+        backingPlaySuccess: d.backingPlaySuccess,
+        recordSuccess: d.recordSuccess,
+        exclusiveAttempted: d.exclusiveAttempted,
+        sharedFallbackUsed: d.sharedFallbackUsed,
+        lastOpenErrorCode: d.lastOpenErrorCode,
+        androidSdkVersion: d.androidSdkVersion,
+        backingFramesGenerated: d.backingFramesGenerated,
+        recordedFramesWritten: d.recordedFramesWritten,
+        transportStartSample: d.transportStartSample,
+        transportStopSample: d.transportStopSample,
+        outputCallbackCount: d.outputCallbackCount,
+        inputCallbackCount: d.inputCallbackCount,
+        firstOutputFrameSample: d.firstOutputFrameSample,
+        firstInputFrameSample: d.firstInputFrameSample,
+        estimatedInputOutputDeltaSamples: d.estimatedInputOutputDeltaSamples,
+      );
+    } finally {
+      calloc.free(ptr);
+    }
+  }
 }
