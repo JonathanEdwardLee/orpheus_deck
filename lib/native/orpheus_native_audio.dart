@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import 'orpheus_native_bindings.dart';
+import 'orpheus_native_duplex_bindings.dart';
 import 'orpheus_native_labels.dart';
 
 /// Phase N1 — Oboe handshake orchestration (no main recorder integration).
@@ -16,10 +17,13 @@ class OrpheusNativeAudio {
 
   OrpheusNativeBindings? _bindings;
   String? _lastWavPath;
+  String? _lastN2WavPath;
 
   bool get isAndroid => Platform.isAndroid;
 
   String? get lastWavPath => _lastWavPath;
+
+  String? get lastN2WavPath => _lastN2WavPath;
 
   OrpheusNativeBindings get bindings {
     if (!isAndroid) {
@@ -97,6 +101,58 @@ class OrpheusNativeAudio {
       return diag;
     } finally {
       b.shutdown();
+      _bindings = null;
+    }
+  }
+
+  /// Phase N2 — full-duplex click backing + mic record (dev only).
+  Future<OrpheusDuplexDiagnosticsData> runDuplexTest({
+    Duration completeTimeout = const Duration(seconds: 12),
+  }) async {
+    await ensureMicPermission();
+    final b = bindings;
+
+    _check(b.n2Init(), b);
+    try {
+      _check(b.n2OpenStreams(), b);
+
+      final dir = await getTemporaryDirectory();
+      final wavPath =
+          '${dir.path}/orpheus_n2_duplex_${DateTime.now().millisecondsSinceEpoch}.wav';
+      _lastN2WavPath = wavPath;
+
+      final pathPtr = wavPath.toNativeUtf8();
+      try {
+        _check(b.n2StartDuplex(pathPtr), b);
+      } finally {
+        malloc.free(pathPtr);
+      }
+
+      final deadline = DateTime.now().add(completeTimeout);
+      while (DateTime.now().isBefore(deadline)) {
+        if (b.n2IsComplete() == 1) {
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+
+      final diag = b.readDuplexDiagnostics();
+      if (diag.wavWriteSuccess != 1) {
+        throw StateError('N2 duplex did not complete or WAV write failed');
+      }
+
+      final file = File(wavPath);
+      if (!await file.exists() || await file.length() < 44) {
+        throw StateError('N2 WAV missing or too small');
+      }
+
+      debugPrint(
+        'Orpheus N2: duplex OK — ${OrpheusNativeLabels.formatDuplexSummary(diag)} '
+        'path=$wavPath',
+      );
+      return diag;
+    } finally {
+      b.n2Shutdown();
       _bindings = null;
     }
   }

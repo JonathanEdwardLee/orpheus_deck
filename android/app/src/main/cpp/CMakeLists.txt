@@ -15,6 +15,9 @@ FetchContent_MakeAvailable(oboe)
 add_library(orpheus_native SHARED
     native_engine.cpp
     oboe_engine.cpp
+    duplex_engine.cpp
+    click_backing.cpp
+    timing_analysis.cpp
     ring_buffer.cpp
     wav_writer.cpp
 )
