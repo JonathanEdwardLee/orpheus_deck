@@ -155,21 +155,80 @@ class OrpheusNativeLabels {
     }
   }
 
+  static String timingQualityLabel(OrpheusDuplexDiagnosticsData d) {
+    if (d.analysisSuccess == 1 &&
+        d.clicksDetected >= 5 &&
+        d.confidencePercent >= 80 &&
+        d.spreadSamples <= 1000) {
+      return 'QUALITY: GOOD';
+    }
+    return 'QUALITY: UNSTABLE';
+  }
+
   /// N2B engineering validation block (not user calibration).
   static String formatTimingAnalysis(OrpheusDuplexDiagnosticsData d) {
+    final quality = timingQualityLabel(d);
     if (d.analysisSuccess != 1) {
-      return 'TIMING ANALYSIS FAILED\n'
+      return '$quality\n'
+          'TIMING ANALYSIS FAILED\n'
           '${timingFailureMessage(d.analysisFailureReason)}\n'
           'CLICKS DETECTED: ${d.clicksDetected} / ${d.clicksExpected}\n'
-          'USE PHONE SPEAKER OR LET THE MIC HEAR THE CLICKS';
+          'USE PHONE SPEAKER. TURN VOLUME UP.\n'
+          'MIC MUST HEAR THE CLICKS.';
     }
-    return 'TIMING ANALYSIS\n'
+    return '$quality\n'
+        'TIMING ANALYSIS\n'
         'CLICKS DETECTED: ${d.clicksDetected} / ${d.clicksExpected}\n'
         'MEDIAN OFFSET: ${d.medianOffsetSamples} SAMPLES / '
         '${d.medianOffsetMs.toStringAsFixed(1)} MS\n'
         'SPREAD: ${d.spreadSamples} SAMPLES '
         '(${d.minOffsetSamples} … ${d.maxOffsetSamples})\n'
         'CONFIDENCE: ${d.confidencePercent}%\n'
-        'recordLatencyOffsetSamples: ${d.recordLatencyOffsetSamples}';
+        'recordLatencyOffsetSamples: ${d.recordLatencyOffsetSamples}\n'
+        'RUN 2–3 TIMES. USE A CONSISTENT VALUE.';
+  }
+
+  static String compensationResultLabel(OrpheusDuplexDiagnosticsData d) {
+    if (d.compensatedAlignmentSuccess == 1) {
+      return 'RESULT: PASS';
+    }
+    return 'RESULT: UNSTABLE';
+  }
+
+  /// N2D: proves median offset can align a recorded take (engineering only).
+  static String formatCompensationProof(OrpheusDuplexDiagnosticsData d) {
+    final result = compensationResultLabel(d);
+    if (d.perClickOffsetCount == 0 && d.analysisSuccess != 1) {
+      return 'COMPENSATION PROOF\n'
+          'Run N2 with timing analysis first.\n'
+          '$result';
+    }
+    return 'COMPENSATION PROOF\n'
+        'UNCOMPENSATED: ${d.medianOffsetSamples} SAMPLES / '
+        '${d.medianOffsetMs.toStringAsFixed(1)} MS\n'
+        'APPLIED: ${d.appliedCompensationSamples} SAMPLES / '
+        '${d.appliedCompensationMs.toStringAsFixed(1)} MS\n'
+        'RESIDUAL: ${d.compensatedMedianResidualSamples} SAMPLES / '
+        '${d.compensatedMedianResidualMs.toStringAsFixed(1)} MS\n'
+        'RESIDUAL SPREAD: ${d.compensatedResidualSpreadSamples} SAMPLES '
+        '(${d.compensatedResidualMinSamples} … ${d.compensatedResidualMaxSamples})\n'
+        '$result\n'
+        'QUALITY: ${d.compensatedQualityPercent}%\n'
+        'This proves the measured offset can align a recorded take.\n'
+        'This is still an engineering test, not the final user latency test.';
+  }
+
+  static String formatPerClickOffsets(OrpheusDuplexDiagnosticsData d) {
+    final n = d.perClickOffsetCount;
+    if (n <= 0) {
+      return '';
+    }
+    final buf = StringBuffer('PER-CLICK OFFSETS:\n');
+    for (var i = 0; i < n && i < d.perClickOffsets.length; i++) {
+      final off = d.perClickOffsets[i];
+      final res = i < d.perClickResiduals.length ? d.perClickResiduals[i] : 0;
+      buf.writeln('click ${i + 1} offset $off samples (residual $res)');
+    }
+    return buf.toString().trimRight();
   }
 }

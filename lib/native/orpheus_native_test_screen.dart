@@ -193,24 +193,25 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
             ),
           ),
         ),
-        if (d.analysisSuccess == 1) ...[
-          const SizedBox(height: 8),
-          _summaryLine(
-            'Clicks',
-            '${d.clicksDetected} / ${d.clicksExpected}',
+        const SizedBox(height: 8),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.white24),
+            color: Colors.white.withValues(alpha: 0.06),
           ),
-          _summaryLine('Median offset', '${d.medianOffsetSamples} samples'),
-          _summaryLine(
-            'Median offset (display)',
-            '${d.medianOffsetMs.toStringAsFixed(1)} ms',
+          child: Text(
+            OrpheusNativeLabels.formatCompensationProof(d),
+            style: _mono.copyWith(
+              color: d.compensatedAlignmentSuccess == 1
+                  ? Colors.greenAccent
+                  : Colors.orangeAccent,
+              fontWeight: FontWeight.bold,
+              height: 1.45,
+            ),
           ),
-          _summaryLine('Spread', '${d.spreadSamples} samples'),
-          _summaryLine('Confidence', '${d.confidencePercent}%'),
-          _summaryLine(
-            'recordLatencyOffsetSamples',
-            '${d.recordLatencyOffsetSamples}',
-          ),
-        ],
+        ),
       ],
     );
   }
@@ -285,8 +286,8 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
               'Does not affect the main four-track recorder.\n\n'
               'N1 RECORDS A SHORT NATIVE TEST WAV.\n'
               'N2 PLAYS NATIVE CLICK BACKING AND RECORDS MIC AT THE SAME TIME.\n'
-              'N2B MEASURES CLICK ALIGNMENT IN THE RECORDED WAV (ENGINEERING).\n'
-              'USE PHONE SPEAKER SO THE MIC CAN HEAR CLICKS.\n'
+              'N2B MEASURES CLICK ALIGNMENT (ENGINEERING VALIDATION).\n'
+              'N2D PROVES COMPENSATION ZEROS RESIDUAL OFFSET.\n'
               'NEITHER USES YOUR CURRENT PROJECT OR FOUR-TRACK SESSION.',
               style: _mono.copyWith(color: Colors.white54),
             ),
@@ -302,6 +303,26 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
                 style: const TextStyle(
                   fontFamily: 'monospace',
                   fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.white24),
+              ),
+              child: Text(
+                'FOR TIMING ANALYSIS:\n'
+                'USE PHONE SPEAKER.\n'
+                'TURN VOLUME UP.\n'
+                'KEEP ROOM QUIET.\n'
+                'MIC MUST HEAR THE CLICKS.',
+                style: _mono.copyWith(
+                  color: Colors.white54,
+                  fontWeight: FontWeight.bold,
+                  height: 1.45,
                 ),
               ),
             ),
@@ -409,7 +430,13 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
         'medianOffsetMsTimes1000=${d.medianOffsetMsTimes1000}\n'
         'spreadSamples=${d.spreadSamples}\n'
         'confidencePercent=${d.confidencePercent}\n'
-        'recordLatencyOffsetSamples=${d.recordLatencyOffsetSamples}';
+        'recordLatencyOffsetSamples=${d.recordLatencyOffsetSamples}\n'
+        'appliedCompensationSamples=${d.appliedCompensationSamples}\n'
+        'compensatedMedianResidualSamples=${d.compensatedMedianResidualSamples}\n'
+        'compensatedResidualSpreadSamples=${d.compensatedResidualSpreadSamples}\n'
+        'compensatedAlignmentSuccess=${d.compensatedAlignmentSuccess}\n'
+        'compensatedQualityPercent=${d.compensatedQualityPercent}\n'
+        '${OrpheusNativeLabels.formatPerClickOffsets(d)}';
   }
 }
 

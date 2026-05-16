@@ -39,6 +39,17 @@ class OrpheusDuplexDiagnosticsData {
     required this.maxOffsetSamples,
     required this.spreadSamples,
     required this.recordLatencyOffsetSamples,
+    required this.compensatedAlignmentSuccess,
+    required this.compensatedQualityPercent,
+    required this.compensatedMedianResidualMsTimes1000,
+    required this.perClickOffsetCount,
+    required this.appliedCompensationSamples,
+    required this.compensatedMedianResidualSamples,
+    required this.compensatedResidualMinSamples,
+    required this.compensatedResidualMaxSamples,
+    required this.compensatedResidualSpreadSamples,
+    required this.perClickOffsets,
+    required this.perClickResiduals,
   });
 
   final int sampleRate;
@@ -80,13 +91,41 @@ class OrpheusDuplexDiagnosticsData {
   final int spreadSamples;
   final int recordLatencyOffsetSamples;
 
+  final int compensatedAlignmentSuccess;
+  final int compensatedQualityPercent;
+  final int compensatedMedianResidualMsTimes1000;
+  final int perClickOffsetCount;
+  final int appliedCompensationSamples;
+  final int compensatedMedianResidualSamples;
+  final int compensatedResidualMinSamples;
+  final int compensatedResidualMaxSamples;
+  final int compensatedResidualSpreadSamples;
+  final List<int> perClickOffsets;
+  final List<int> perClickResiduals;
+
   double get backingDurationSec =>
       sampleRate > 0 ? backingFramesGenerated / sampleRate : 0;
 
   double get recordedDurationSec =>
       sampleRate > 0 ? recordedFramesWritten / sampleRate : 0;
 
-  double get medianOffsetMs => medianOffsetMsTimes1000 / 1000.0;
+  /// Display-only ms; samples remain source of truth.
+  double get medianOffsetMs {
+    if (sampleRate > 0) {
+      return medianOffsetSamples * 1000.0 / sampleRate;
+    }
+    return medianOffsetMsTimes1000 / 1000.0;
+  }
+
+  double get compensatedMedianResidualMs {
+    if (sampleRate > 0) {
+      return compensatedMedianResidualSamples * 1000.0 / sampleRate;
+    }
+    return compensatedMedianResidualMsTimes1000 / 1000.0;
+  }
+
+  double get appliedCompensationMs =>
+      sampleRate > 0 ? appliedCompensationSamples * 1000.0 / sampleRate : 0;
 }
 
 /// Must match OrpheusDuplexDiagnostics in audio_types.h.
@@ -205,4 +244,67 @@ final class OrpheusDuplexDiagnostics extends Struct {
 
   @Int64()
   external int recordLatencyOffsetSamples;
+
+  @Int32()
+  external int compensatedAlignmentSuccess;
+
+  @Int32()
+  external int compensatedQualityPercent;
+
+  @Int32()
+  external int compensatedMedianResidualMsTimes1000;
+
+  @Int32()
+  external int perClickOffsetCount;
+
+  @Int64()
+  external int appliedCompensationSamples;
+
+  @Int64()
+  external int compensatedMedianResidualSamples;
+
+  @Int64()
+  external int compensatedResidualMinSamples;
+
+  @Int64()
+  external int compensatedResidualMaxSamples;
+
+  @Int64()
+  external int compensatedResidualSpreadSamples;
+
+  @Int64()
+  external int perClickOffset0;
+
+  @Int64()
+  external int perClickOffset1;
+
+  @Int64()
+  external int perClickOffset2;
+
+  @Int64()
+  external int perClickOffset3;
+
+  @Int64()
+  external int perClickOffset4;
+
+  @Int64()
+  external int perClickOffset5;
+
+  @Int64()
+  external int perClickResidual0;
+
+  @Int64()
+  external int perClickResidual1;
+
+  @Int64()
+  external int perClickResidual2;
+
+  @Int64()
+  external int perClickResidual3;
+
+  @Int64()
+  external int perClickResidual4;
+
+  @Int64()
+  external int perClickResidual5;
 }

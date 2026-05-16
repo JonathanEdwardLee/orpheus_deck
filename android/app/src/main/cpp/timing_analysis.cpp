@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 
 namespace orpheus {
@@ -49,6 +50,70 @@ int64_t medianOf(std::vector<int64_t> values) {
     std::nth_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(mid),
                      values.end());
     return values[mid];
+}
+
+void fillCompensationProof(TimingAnalysisResult& result,
+                           const std::vector<int64_t>& uncompensatedOffsets,
+                           const int32_t sampleRate) {
+    if (uncompensatedOffsets.empty() || sampleRate <= 0) {
+        return;
+    }
+
+    const int64_t applied = result.medianOffsetSamples;
+    result.appliedCompensationSamples = applied;
+
+    std::vector<int64_t> residuals;
+    residuals.reserve(uncompensatedOffsets.size());
+    for (const int64_t offset : uncompensatedOffsets) {
+        residuals.push_back(offset - applied);
+    }
+
+    const int64_t resMed = medianOf(residuals);
+    int64_t resMin = residuals[0];
+    int64_t resMax = residuals[0];
+    for (const int64_t r : residuals) {
+        resMin = std::min(resMin, r);
+        resMax = std::max(resMax, r);
+    }
+    const int64_t resSpread = resMax - resMin;
+
+    result.compensatedMedianResidualSamples = resMed;
+    result.compensatedMedianResidualMsTimes1000 = static_cast<int32_t>(
+        (resMed * 1000000LL) / static_cast<int64_t>(sampleRate));
+    result.compensatedResidualMinSamples = resMin;
+    result.compensatedResidualMaxSamples = resMax;
+    result.compensatedResidualSpreadSamples = resSpread;
+
+    const int32_t count = static_cast<int32_t>(std::min(
+        uncompensatedOffsets.size(), static_cast<size_t>(kMaxPerClickOffsets)));
+    result.perClickOffsetCount = count;
+    for (int32_t i = 0; i < count; ++i) {
+        result.perClickOffsetSamples[i] = uncompensatedOffsets[static_cast<size_t>(i)];
+        result.perClickResidualSamples[i] =
+            residuals[static_cast<size_t>(i)];
+    }
+
+    const bool pass =
+        result.analysisSuccess == 1 && result.clicksDetected >= kN2DMinClicksForPass &&
+        std::llabs(resMed) <= kN2DMaxMedianResidualAbsSamples &&
+        resSpread <= kN2DMaxResidualSpreadSamples;
+
+    result.compensatedAlignmentSuccess = pass ? 1 : 0;
+
+    if (pass) {
+        const int32_t spreadPenalty = static_cast<int32_t>(
+            std::min<int64_t>(15, (resSpread * 15) / kN2DMaxResidualSpreadSamples));
+        result.compensatedQualityPercent =
+            std::max(85, 100 - spreadPenalty);
+    } else {
+        const int64_t absMed = std::llabs(resMed);
+        int32_t penalty = static_cast<int32_t>(
+            std::min<int64_t>(100, (absMed * 100) / kN2DMaxMedianResidualAbsSamples));
+        if (resSpread > kN2DMaxResidualSpreadSamples) {
+            penalty = std::min(100, penalty + 20);
+        }
+        result.compensatedQualityPercent = std::max(0, 100 - penalty);
+    }
 }
 
 }  // namespace
@@ -130,11 +195,6 @@ TimingAnalysisResult analyzeRecordedClickTiming(
         result.analysisFailureReason = kTimingNoClicksDetected;
         return result;
     }
-    if (detected.size() < static_cast<size_t>(kMinMatchesForSuccess)) {
-        result.analysisFailureReason = kTimingTooFewMatches;
-        return result;
-    }
-
     const int64_t med = medianOf(offsets);
     int64_t minOff = offsets[0];
     int64_t maxOff = offsets[0];
@@ -149,26 +209,33 @@ TimingAnalysisResult analyzeRecordedClickTiming(
     result.maxOffsetSamples = maxOff;
     result.spreadSamples = spread;
     result.recordLatencyOffsetSamples = med;
-    result.medianOffsetMsTimes1000 =
-        static_cast<int32_t>((med * 1000) / sampleRate);
+    result.medianOffsetMsTimes1000 = static_cast<int32_t>(
+        (med * 1000000LL) / static_cast<int64_t>(sampleRate));
+
+    if (detected.size() < static_cast<size_t>(kMinMatchesForSuccess)) {
+        result.analysisFailureReason = kTimingTooFewMatches;
+        fillCompensationProof(result, offsets, sampleRate);
+        return result;
+    }
+
+    const int32_t matchPct = static_cast<int32_t>(
+        (100 * detected.size()) / static_cast<size_t>(numClicksExpected));
 
     if (spread > kMaxSpreadSamples) {
         result.analysisFailureReason = kTimingSpreadTooLarge;
-        result.confidencePercent = std::max(
-            0,
-            static_cast<int32_t>(
-                (100 * detected.size()) / static_cast<size_t>(numClicksExpected)) - 20);
+        result.confidencePercent = std::max(0, matchPct - 20);
+        fillCompensationProof(result, offsets, sampleRate);
         return result;
     }
 
     result.analysisSuccess = 1;
     result.analysisFailureReason = kTimingOk;
-    const int32_t matchPct = static_cast<int32_t>(
-        (100 * detected.size()) / static_cast<size_t>(numClicksExpected));
     const int32_t spreadPenalty = static_cast<int32_t>(
         std::min<int64_t>(40, (spread * 40) / kMaxSpreadSamples));
     result.confidencePercent =
         std::max(0, std::min(100, matchPct - spreadPenalty));
+
+    fillCompensationProof(result, offsets, sampleRate);
     return result;
 }
 

@@ -415,6 +415,12 @@ void DuplexEngine::runTimingAnalysis(const std::vector<float>& recordedSamples) 
         static_cast<long long>(timingResult_.spreadSamples),
         static_cast<long long>(timingResult_.recordLatencyOffsetSamples),
         timingResult_.confidencePercent);
+    ORPHEUS_LOGI(
+        "N2D compensation: applied=%lld residualMedian=%lld spread=%lld pass=%d",
+        static_cast<long long>(timingResult_.appliedCompensationSamples),
+        static_cast<long long>(timingResult_.compensatedMedianResidualSamples),
+        static_cast<long long>(timingResult_.compensatedResidualSpreadSamples),
+        timingResult_.compensatedAlignmentSuccess);
 }
 
 void DuplexEngine::recordWorkerLoop() {
@@ -502,6 +508,31 @@ void DuplexEngine::fillDiagnostics(OrpheusDuplexDiagnostics* out) const {
     out->maxOffsetSamples = timingResult_.maxOffsetSamples;
     out->spreadSamples = timingResult_.spreadSamples;
     out->recordLatencyOffsetSamples = timingResult_.recordLatencyOffsetSamples;
+
+    out->compensatedAlignmentSuccess = timingResult_.compensatedAlignmentSuccess;
+    out->compensatedQualityPercent = timingResult_.compensatedQualityPercent;
+    out->compensatedMedianResidualMsTimes1000 =
+        timingResult_.compensatedMedianResidualMsTimes1000;
+    out->perClickOffsetCount = timingResult_.perClickOffsetCount;
+    out->appliedCompensationSamples = timingResult_.appliedCompensationSamples;
+    out->compensatedMedianResidualSamples =
+        timingResult_.compensatedMedianResidualSamples;
+    out->compensatedResidualMinSamples = timingResult_.compensatedResidualMinSamples;
+    out->compensatedResidualMaxSamples = timingResult_.compensatedResidualMaxSamples;
+    out->compensatedResidualSpreadSamples =
+        timingResult_.compensatedResidualSpreadSamples;
+    out->perClickOffset0 = timingResult_.perClickOffsetSamples[0];
+    out->perClickOffset1 = timingResult_.perClickOffsetSamples[1];
+    out->perClickOffset2 = timingResult_.perClickOffsetSamples[2];
+    out->perClickOffset3 = timingResult_.perClickOffsetSamples[3];
+    out->perClickOffset4 = timingResult_.perClickOffsetSamples[4];
+    out->perClickOffset5 = timingResult_.perClickOffsetSamples[5];
+    out->perClickResidual0 = timingResult_.perClickResidualSamples[0];
+    out->perClickResidual1 = timingResult_.perClickResidualSamples[1];
+    out->perClickResidual2 = timingResult_.perClickResidualSamples[2];
+    out->perClickResidual3 = timingResult_.perClickResidualSamples[3];
+    out->perClickResidual4 = timingResult_.perClickResidualSamples[4];
+    out->perClickResidual5 = timingResult_.perClickResidualSamples[5];
 }
 
 void DuplexEngine::shutdown() {
