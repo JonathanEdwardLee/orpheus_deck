@@ -11,6 +11,7 @@ import 'orpheus_native_duplex_bindings.dart';
 import 'orpheus_native_labels.dart';
 import 'orpheus_native_latency_profile.dart';
 import 'orpheus_native_n3_bindings.dart';
+import 'orpheus_native_n3c_bindings.dart';
 
 /// Hidden Phase N1/N2 dev screen — not linked from normal user flow.
 class OrpheusNativeTestScreen extends StatefulWidget {
@@ -46,14 +47,17 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
   OrpheusDuplexDiagnosticsData? _n2Diag;
   OrpheusLatencyProfileResult? _n2eProfile;
   OrpheusN3PlaybackDiagnosticsData? _n3Diag;
+  OrpheusN3OverdubDiagnosticsData? _n3cDiag;
 
   @override
   void dispose() {
     OrpheusNativeAudio.instance.stopN3b();
+    OrpheusNativeAudio.instance.stopN3c();
     super.dispose();
   }
 
   Future<void> _runHandshake() async {
+    await OrpheusNativeAudio.instance.stopN3c();
     await OrpheusNativeAudio.instance.stopN3b();
     setState(() {
       _busy = true;
@@ -86,6 +90,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
   }
 
   Future<void> _runCalibrationProfile() async {
+    await OrpheusNativeAudio.instance.stopN3c();
     await OrpheusNativeAudio.instance.stopN3b();
     setState(() {
       _busy = true;
@@ -152,6 +157,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
   }
 
   Future<void> _startN3bAt(int startSample) async {
+    await OrpheusNativeAudio.instance.stopN3c();
     setState(() {
       _busy = true;
       _status = 'N3B playback from sample $startSample…';
@@ -204,7 +210,63 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
     }
   }
 
+  Future<void> _startN3cAt(int backingStartSample) async {
+    setState(() {
+      _busy = true;
+      _status =
+          'N3C overdub from sample $backingStartSample '
+          '(offset ${OrpheusNativeAudio.instance.recordLatencyOffsetForNativeTest})…';
+    });
+    try {
+      final diag = await OrpheusNativeAudio.instance.runN3cOverdub(
+        backingStartSample: backingStartSample,
+        onTransportTick: (d) {
+          if (!mounted) return;
+          setState(() => _n3cDiag = d);
+        },
+      );
+      if (!mounted) return;
+      setState(() {
+        _n3cDiag = diag;
+        _status =
+            'N3C complete.\n'
+            'Backing: ${OrpheusNativeAudio.instance.lastN3cBackingPath}\n'
+            'Record: ${OrpheusNativeAudio.instance.lastN3cRecordPath}';
+      });
+    } catch (e, st) {
+      debugPrint('Orpheus N3C failed: $e\n$st');
+      if (!mounted) return;
+      setState(() => _status = 'N3C failed: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
+  Future<void> _runN3c() => _startN3cAt(0);
+
+  Future<void> _stopN3c() async {
+    setState(() {
+      _busy = true;
+      _status = 'Stopping N3C…';
+    });
+    try {
+      await OrpheusNativeAudio.instance.stopN3c();
+      if (!mounted) return;
+      setState(() {
+        _n3cDiag = null;
+        _status = 'N3C stopped.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
   Future<void> _runDuplex() async {
+    await OrpheusNativeAudio.instance.stopN3c();
     await OrpheusNativeAudio.instance.stopN3b();
     setState(() {
       _busy = true;
@@ -239,12 +301,12 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
     }
   }
 
-  Future<void> _shareWav(String? path) async {
+  Future<void> _shareWav(String? path, {String label = 'Orpheus test WAV'}) async {
     if (path == null || !File(path).existsSync()) {
       return;
     }
     await SharePlus.instance.share(
-      ShareParams(files: [XFile(path)], text: 'Orpheus N2 duplex test WAV'),
+      ShareParams(files: [XFile(path)], text: label),
     );
   }
 
@@ -352,6 +414,49 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
             ),
           ),
         ],
+      ],
+    );
+  }
+
+  Widget _buildN3cSummary(OrpheusN3OverdubDiagnosticsData d) {
+    final backing = OrpheusNativeAudio.instance.lastN3cBackingPath;
+    final record = OrpheusNativeAudio.instance.lastN3cRecordPath;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _sectionTitle('N3C OVERDUB'),
+        if (backing != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(
+              'BACKING WAV:\n$backing',
+              style: _mono.copyWith(color: Colors.white38),
+            ),
+          ),
+        if (record != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              'RECORDED WAV:\n$record',
+              style: _mono.copyWith(color: Colors.white38),
+            ),
+          ),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.white24),
+            color: Colors.white.withValues(alpha: 0.06),
+          ),
+          child: Text(
+            OrpheusNativeLabels.formatN3cOverdub(d),
+            style: _mono.copyWith(
+              color: d.wavWriteSuccess == 1 ? Colors.greenAccent : Colors.orangeAccent,
+              fontWeight: FontWeight.bold,
+              height: 1.45,
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -496,6 +601,14 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
               style: _monoSmall,
             ),
           ],
+          if (_n3cDiag != null) ...[
+            if (_n1Diag != null || _n2Diag != null || _n3Diag != null)
+              const SizedBox(height: 12),
+            Text(
+              'N3C raw:\n${_rawN3cBlock(_n3cDiag!)}',
+              style: _monoSmall,
+            ),
+          ],
         ],
       ],
     );
@@ -505,6 +618,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
   Widget build(BuildContext context) {
     final n1Path = OrpheusNativeAudio.instance.lastWavPath;
     final n2Path = OrpheusNativeAudio.instance.lastN2WavPath;
+    final n3cPath = OrpheusNativeAudio.instance.lastN3cRecordPath;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
 
     return Scaffold(
@@ -530,6 +644,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
               'N2D PROVES COMPENSATION ZEROS RESIDUAL OFFSET.\n'
               'N2E RUNS 3 PASSES AND PICKS A RECOMMENDED ROUTE OFFSET.\n'
               'N3B PLAYS A NATIVE TEST WAV WITH SAMPLE TRANSPORT.\n'
+              'N3C OVERDUBS MIC OVER THAT WAV WITH ONE TRANSPORT CLOCK.\n'
               'NEITHER USES YOUR CURRENT PROJECT OR FOUR-TRACK SESSION.',
               style: _mono.copyWith(color: Colors.white54),
             ),
@@ -644,6 +759,51 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
               ],
             ),
             const SizedBox(height: 10),
+            FilledButton(
+              onPressed: _busy ? null : _runN3c,
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.deepPurple.shade900,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text(
+                'RUN N3C OVERDUB TEST',
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                TextButton(
+                  onPressed: _busy ? null : () => _startN3cAt(0),
+                  child: const Text(
+                    'N3C START AT 0',
+                    style: TextStyle(fontFamily: 'monospace'),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _busy
+                      ? null
+                      : () => _startN3cAt(_n3SeekTwoSecondsSamples),
+                  child: const Text(
+                    'N3C START AT 2 SEC',
+                    style: TextStyle(fontFamily: 'monospace'),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _busy ? null : _stopN3c,
+                  child: const Text(
+                    'STOP N3C',
+                    style: TextStyle(fontFamily: 'monospace'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
             if (n1Path != null)
               Align(
                 alignment: Alignment.centerLeft,
@@ -675,6 +835,29 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
                   ),
                 ],
               ),
+            if (n3cPath != null)
+              Wrap(
+                spacing: 8,
+                children: [
+                  TextButton(
+                    onPressed: () => _openWav(n3cPath),
+                    child: const Text(
+                      'OPEN N3C WAV',
+                      style: TextStyle(fontFamily: 'monospace'),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => _shareWav(
+                      n3cPath,
+                      label: 'Orpheus N3C overdub record WAV',
+                    ),
+                    child: const Text(
+                      'SHARE N3C WAV',
+                      style: TextStyle(fontFamily: 'monospace'),
+                    ),
+                  ),
+                ],
+              ),
             const SizedBox(height: 8),
             _sectionTitle('STATUS'),
             Text(
@@ -684,6 +867,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
             if (_n1Diag != null) _buildN1Summary(_n1Diag!),
             if (_n2Diag != null) _buildN2Summary(_n2Diag!),
             if (_n3Diag != null) _buildN3bSummary(_n3Diag!),
+            if (_n3cDiag != null) _buildN3cSummary(_n3cDiag!),
             if (_n2eProfile != null) _buildN2eProfile(_n2eProfile!),
             if (_n1Diag != null || _n2Diag != null) ...[
               const Divider(color: Colors.white24, height: 24),
@@ -755,6 +939,20 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
         'playbackComplete=${d.playbackComplete}\n'
         'xRunCount=${d.xRunCount}\n'
         'outputCallbackCount=${d.outputCallbackCount}';
+  }
+
+  String _rawN3cBlock(OrpheusN3OverdubDiagnosticsData d) {
+    return 'backingWavTotalFrames=${d.backingWavTotalFrames}\n'
+        'backingStartSample=${d.backingStartSample}\n'
+        'recordStartSample=${d.recordStartSample}\n'
+        'defaultRecordLatencyOffsetSamples=${d.defaultRecordLatencyOffsetSamples}\n'
+        'effectiveRecordStartSample=${d.effectiveRecordStartSample}\n'
+        'currentTransportSample=${d.currentTransportSample}\n'
+        'recordedFramesWritten=${d.recordedFramesWritten}\n'
+        'wavWriteSuccess=${d.wavWriteSuccess}\n'
+        'xRunCount=${d.xRunCount}\n'
+        'medianOffsetSamples=${d.medianOffsetSamples}\n'
+        'compensatedMedianResidualSamples=${d.compensatedMedianResidualSamples}';
   }
 }
 

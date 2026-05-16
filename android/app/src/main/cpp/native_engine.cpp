@@ -6,6 +6,7 @@
 
 #include "duplex_engine.h"
 #include "oboe_engine.h"
+#include "overdub_engine.h"
 #include "playback_engine.h"
 
 namespace {
@@ -13,6 +14,7 @@ namespace {
 std::unique_ptr<orpheus::OboeEngine> gEngine;
 std::unique_ptr<orpheus::DuplexEngine> gDuplexEngine;
 std::unique_ptr<orpheus::PlaybackEngine> gPlaybackEngine;
+std::unique_ptr<orpheus::OverdubEngine> gOverdubEngine;
 std::string gLastError;
 /** Only for last_error string lifetime — not used in audio callbacks. */
 std::mutex gErrorMutex;
@@ -27,6 +29,10 @@ void setError(const std::string& msg) {
 extern "C" {
 
 int32_t orpheus_native_init(void) {
+    if (gOverdubEngine) {
+        gOverdubEngine->shutdown();
+        gOverdubEngine.reset();
+    }
     if (gPlaybackEngine) {
         gPlaybackEngine->shutdown();
         gPlaybackEngine.reset();
@@ -109,6 +115,10 @@ void orpheus_native_shutdown(void) {
 }
 
 int32_t orpheus_native_n2_init(void) {
+    if (gOverdubEngine) {
+        gOverdubEngine->shutdown();
+        gOverdubEngine.reset();
+    }
     if (gPlaybackEngine) {
         gPlaybackEngine->shutdown();
         gPlaybackEngine.reset();
@@ -177,7 +187,7 @@ void orpheus_native_n2_shutdown(void) {
     }
 }
 
-static void shutdownOtherEnginesForN3() {
+static void shutdownAllExceptOverdub() {
     if (gEngine) {
         gEngine->shutdown();
         gEngine.reset();
@@ -186,10 +196,33 @@ static void shutdownOtherEnginesForN3() {
         gDuplexEngine->shutdown();
         gDuplexEngine.reset();
     }
+    if (gPlaybackEngine) {
+        gPlaybackEngine->shutdown();
+        gPlaybackEngine.reset();
+    }
+}
+
+static void shutdownOtherEnginesForN3() {
+    shutdownAllExceptOverdub();
+    if (gOverdubEngine) {
+        gOverdubEngine->shutdown();
+        gOverdubEngine.reset();
+    }
 }
 
 int32_t orpheus_n3_init(void) {
-    shutdownOtherEnginesForN3();
+    if (gOverdubEngine) {
+        gOverdubEngine->shutdown();
+        gOverdubEngine.reset();
+    }
+    if (gDuplexEngine) {
+        gDuplexEngine->shutdown();
+        gDuplexEngine.reset();
+    }
+    if (gEngine) {
+        gEngine->shutdown();
+        gEngine.reset();
+    }
     if (gPlaybackEngine) {
         gPlaybackEngine->shutdown();
         gPlaybackEngine.reset();
@@ -292,6 +325,106 @@ void orpheus_n3_shutdown(void) {
     if (gPlaybackEngine) {
         gPlaybackEngine->shutdown();
         gPlaybackEngine.reset();
+    }
+}
+
+int32_t orpheus_n3c_init(void) {
+    shutdownOtherEnginesForN3();
+    if (gOverdubEngine) {
+        gOverdubEngine->shutdown();
+        gOverdubEngine.reset();
+    }
+    gOverdubEngine = std::make_unique<orpheus::OverdubEngine>();
+    if (!gOverdubEngine->init()) {
+        setError(gOverdubEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3c_generate_backing_wav(const char* backing_path) {
+    if (!gOverdubEngine) {
+        setError("N3C engine not initialized");
+        return -1;
+    }
+    if (backing_path == nullptr) {
+        setError("N3C null backing path");
+        return -1;
+    }
+    if (!gOverdubEngine->generateAndLoadBackingWav(std::string(backing_path))) {
+        setError(gOverdubEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3c_set_default_record_latency_offset_samples(
+    const int64_t offset_samples) {
+    if (!gOverdubEngine) {
+        setError("N3C engine not initialized");
+        return -1;
+    }
+    gOverdubEngine->setDefaultRecordLatencyOffsetSamples(offset_samples);
+    return 0;
+}
+
+int32_t orpheus_n3c_open_streams(void) {
+    if (!gOverdubEngine) {
+        setError("N3C engine not initialized");
+        return -1;
+    }
+    if (!gOverdubEngine->openStreams()) {
+        setError(gOverdubEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3c_start_overdub(const char* record_wav_path,
+                                  const int64_t backing_start_sample) {
+    if (!gOverdubEngine) {
+        setError("N3C engine not initialized");
+        return -1;
+    }
+    if (record_wav_path == nullptr) {
+        setError("N3C null record path");
+        return -1;
+    }
+    if (!gOverdubEngine->startOverdub(std::string(record_wav_path),
+                                      backing_start_sample)) {
+        setError(gOverdubEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+void orpheus_n3c_stop_overdub(void) {
+    if (gOverdubEngine) {
+        gOverdubEngine->stopOverdub();
+    }
+}
+
+int32_t orpheus_n3c_is_complete(void) {
+    if (!gOverdubEngine) {
+        return 0;
+    }
+    return gOverdubEngine->isComplete() ? 1 : 0;
+}
+
+void orpheus_n3c_get_diagnostics(OrpheusN3OverdubDiagnostics* out) {
+    if (out == nullptr) {
+        return;
+    }
+    *out = OrpheusN3OverdubDiagnostics{};
+    if (gOverdubEngine) {
+        gOverdubEngine->fillDiagnostics(out);
+    }
+}
+
+void orpheus_n3c_shutdown(void) {
+    if (gOverdubEngine) {
+        gOverdubEngine->shutdown();
+        gOverdubEngine.reset();
     }
 }
 

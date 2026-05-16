@@ -5,6 +5,7 @@ import 'package:ffi/ffi.dart';
 
 import 'orpheus_native_duplex_bindings.dart';
 import 'orpheus_native_n3_bindings.dart';
+import 'orpheus_native_n3c_bindings.dart';
 
 /// Dart copy of native diagnostics (safe after FFI buffer is freed).
 class OrpheusNativeDiagnosticsData {
@@ -310,6 +311,58 @@ class OrpheusNativeBindings {
       .lookup<NativeFunction<Void Function()>>('orpheus_n3_shutdown')
       .asFunction();
 
+  late final int Function() n3cInit = lib
+      .lookup<NativeFunction<Int32 Function()>>('orpheus_n3c_init')
+      .asFunction();
+
+  late final int Function(Pointer<Utf8> backingPath) n3cGenerateBackingWav = lib
+      .lookup<NativeFunction<Int32 Function(Pointer<Utf8> backingPath)>>(
+        'orpheus_n3c_generate_backing_wav',
+      )
+      .asFunction();
+
+  late final int Function(int offsetSamples) n3cSetDefaultRecordLatencyOffset =
+      lib
+          .lookup<NativeFunction<Int32 Function(Int64 offsetSamples)>>(
+            'orpheus_n3c_set_default_record_latency_offset_samples',
+          )
+          .asFunction();
+
+  late final int Function() n3cOpenStreams = lib
+      .lookup<NativeFunction<Int32 Function()>>('orpheus_n3c_open_streams')
+      .asFunction();
+
+  late final int Function(Pointer<Utf8> recordPath, int backingStartSample)
+      n3cStartOverdub = lib
+          .lookup<
+              NativeFunction<
+                  Int32 Function(Pointer<Utf8> recordPath,
+                      Int64 backingStartSample)>>(
+            'orpheus_n3c_start_overdub',
+          )
+          .asFunction();
+
+  late final void Function() n3cStopOverdub = lib
+      .lookup<NativeFunction<Void Function()>>('orpheus_n3c_stop_overdub')
+      .asFunction();
+
+  late final int Function() n3cIsComplete = lib
+      .lookup<NativeFunction<Int32 Function()>>('orpheus_n3c_is_complete')
+      .asFunction();
+
+  late final void Function(Pointer<OrpheusN3OverdubDiagnostics> out)
+      n3cGetDiagnostics = lib
+          .lookup<
+              NativeFunction<
+                  Void Function(Pointer<OrpheusN3OverdubDiagnostics> out)>>(
+            'orpheus_n3c_get_diagnostics',
+          )
+          .asFunction();
+
+  late final void Function() n3cShutdown = lib
+      .lookup<NativeFunction<Void Function()>>('orpheus_n3c_shutdown')
+      .asFunction();
+
   OrpheusN3PlaybackDiagnosticsData readN3Diagnostics() {
     final ptr = calloc<OrpheusN3PlaybackDiagnostics>();
     try {
@@ -411,6 +464,53 @@ class OrpheusNativeBindings {
           d.perClickResidual4,
           d.perClickResidual5,
         ],
+      );
+    } finally {
+      calloc.free(ptr);
+    }
+  }
+
+  OrpheusN3OverdubDiagnosticsData readN3cDiagnostics() {
+    final ptr = calloc<OrpheusN3OverdubDiagnostics>();
+    try {
+      n3cGetDiagnostics(ptr);
+      final d = ptr.ref;
+      return OrpheusN3OverdubDiagnosticsData(
+        sampleRate: d.sampleRate,
+        framesPerBurst: d.framesPerBurst,
+        bufferSizeInFrames: d.bufferSizeInFrames,
+        xRunCount: d.xRunCount,
+        apiUsed: d.apiUsed,
+        performanceMode: d.performanceMode,
+        sharingMode: d.sharingMode,
+        inputStreamOpened: d.inputStreamOpened,
+        outputStreamOpened: d.outputStreamOpened,
+        backingWavLoadSuccess: d.backingWavLoadSuccess,
+        wavWriteSuccess: d.wavWriteSuccess,
+        playbackComplete: d.playbackComplete,
+        recordSuccess: d.recordSuccess,
+        errorCode: d.errorCode,
+        exclusiveAttempted: d.exclusiveAttempted,
+        sharedFallbackUsed: d.sharedFallbackUsed,
+        analysisSuccess: d.analysisSuccess,
+        compensatedAlignmentSuccess: d.compensatedAlignmentSuccess,
+        clicksDetected: d.clicksDetected,
+        clicksExpected: d.clicksExpected,
+        confidencePercent: d.confidencePercent,
+        medianOffsetMsTimes1000: d.medianOffsetMsTimes1000,
+        compensatedQualityPercent: d.compensatedQualityPercent,
+        backingWavTotalFrames: d.backingWavTotalFrames,
+        backingStartSample: d.backingStartSample,
+        recordStartSample: d.recordStartSample,
+        defaultRecordLatencyOffsetSamples: d.defaultRecordLatencyOffsetSamples,
+        effectiveRecordStartSample: d.effectiveRecordStartSample,
+        recordedFramesWritten: d.recordedFramesWritten,
+        currentTransportSample: d.currentTransportSample,
+        transportStopSample: d.transportStopSample,
+        outputCallbackCount: d.outputCallbackCount,
+        inputCallbackCount: d.inputCallbackCount,
+        medianOffsetSamples: d.medianOffsetSamples,
+        compensatedMedianResidualSamples: d.compensatedMedianResidualSamples,
       );
     } finally {
       calloc.free(ptr);

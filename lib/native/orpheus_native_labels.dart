@@ -2,6 +2,7 @@ import 'orpheus_native_bindings.dart';
 import 'orpheus_native_duplex_bindings.dart';
 import 'orpheus_native_latency_profile.dart';
 import 'orpheus_native_n3_bindings.dart';
+import 'orpheus_native_n3c_bindings.dart';
 
 /// Oboe 1.10 enum labels (see oboe/Definitions.h).
 class OrpheusNativeLabels {
@@ -278,6 +279,42 @@ class OrpheusNativeLabels {
         ? 'offset=${d.medianOffsetSamples} spread=${d.spreadSamples}'
         : (pass.rejectReason ?? 'unknown');
     return 'Run ${pass.runIndex}: $status — $detail';
+  }
+
+  static String formatN3cOverdub(OrpheusN3OverdubDiagnosticsData d) {
+    if (!d.diagnosticsPlausible) {
+      return 'N3C OVERDUB TEST\n'
+          'N3C DIAGNOSTICS INVALID\n'
+          '(check @Packed(8) FFI layout)\n'
+          'RAW frames=${d.backingWavTotalFrames} transport=${d.currentTransportSample}';
+    }
+    const devDefault = 2900;
+    final offsetLabel = d.defaultRecordLatencyOffsetSamples == devDefault
+        ? 'DEV DEFAULT ONLY'
+        : 'FROM N2E PROFILE (dev memory)';
+    return 'N3C OVERDUB TEST\n'
+        'BACKING: ${d.backingWavTotalFrames} frames @ ${d.sampleRate} Hz\n'
+        'RECORD START: ${d.recordStartSample} samples\n'
+        'defaultRecordLatencyOffsetSamples: '
+        '${d.defaultRecordLatencyOffsetSamples} ($offsetLabel)\n'
+        'effectiveRecordStartSample: ${d.effectiveRecordStartSample}\n'
+        'TRANSPORT: ${d.currentTransportSample} samples '
+        '(${d.transportSeconds.toStringAsFixed(2)} s)\n'
+        'RECORDED: ${d.recordedFramesWritten} frames\n'
+        'PLAYBACK COMPLETE: ${d.playbackComplete == 1 ? 'YES' : 'NO'}\n'
+        'RECORD SUCCESS: ${d.recordSuccess == 1 ? 'YES' : 'NO'}\n'
+        'WAV WRITE: ${d.wavWriteSuccess == 1 ? 'YES' : 'NO'}\n'
+        'XRUNS: ${d.xRunCount}\n'
+        'API: ${apiUsed(d.apiUsed)} | ${performanceMode(d.performanceMode)} | '
+        '${sharingMode(d.sharingMode)}\n'
+        'ALIGNMENT PROOF (recorded mic):\n'
+        'CLICKS: ${d.clicksDetected} / ${d.clicksExpected}\n'
+        'MEDIAN OFFSET: ${d.medianOffsetSamples} samples / '
+        '${d.medianOffsetMs.toStringAsFixed(1)} ms\n'
+        'RESIDUAL AFTER COMP: ${d.compensatedMedianResidualSamples} samples / '
+        '${d.compensatedResidualMs.toStringAsFixed(1)} ms\n'
+        'COMP PASS: ${d.compensatedAlignmentSuccess == 1 ? 'YES' : 'NO'} '
+        '(${d.compensatedQualityPercent}%)';
   }
 
   static String formatN3bPlayback(OrpheusN3PlaybackDiagnosticsData d) {
