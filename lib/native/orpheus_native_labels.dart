@@ -139,4 +139,37 @@ class OrpheusNativeLabels {
     }
     return buf.toString().trimRight();
   }
+
+  static String timingFailureMessage(int reason) {
+    switch (reason) {
+      case 1:
+        return 'Recorded buffer too short for analysis.';
+      case 2:
+        return 'No clicks detected in recording.';
+      case 3:
+        return 'Too few click matches for reliable median.';
+      case 4:
+        return 'Offset spread too large between clicks.';
+      default:
+        return 'Timing analysis failed (code $reason).';
+    }
+  }
+
+  /// N2B engineering validation block (not user calibration).
+  static String formatTimingAnalysis(OrpheusDuplexDiagnosticsData d) {
+    if (d.analysisSuccess != 1) {
+      return 'TIMING ANALYSIS FAILED\n'
+          '${timingFailureMessage(d.analysisFailureReason)}\n'
+          'CLICKS DETECTED: ${d.clicksDetected} / ${d.clicksExpected}\n'
+          'USE PHONE SPEAKER OR LET THE MIC HEAR THE CLICKS';
+    }
+    return 'TIMING ANALYSIS\n'
+        'CLICKS DETECTED: ${d.clicksDetected} / ${d.clicksExpected}\n'
+        'MEDIAN OFFSET: ${d.medianOffsetSamples} SAMPLES / '
+        '${d.medianOffsetMs.toStringAsFixed(1)} MS\n'
+        'SPREAD: ${d.spreadSamples} SAMPLES '
+        '(${d.minOffsetSamples} … ${d.maxOffsetSamples})\n'
+        'CONFIDENCE: ${d.confidencePercent}%\n'
+        'recordLatencyOffsetSamples: ${d.recordLatencyOffsetSamples}';
+  }
 }

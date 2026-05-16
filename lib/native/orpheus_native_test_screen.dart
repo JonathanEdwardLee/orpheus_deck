@@ -73,7 +73,8 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
         _log = 'N2 success.\n'
             'Backing: 6 clicks / 6 s generated natively (48 kHz mono).\n'
             'Recorded WAV: $path\n\n'
-            '${OrpheusNativeLabels.formatDuplexSummary(diag)}';
+            '${OrpheusNativeLabels.formatDuplexSummary(diag)}\n\n'
+            '${OrpheusNativeLabels.formatTimingAnalysis(diag)}';
       });
     } catch (e, st) {
       debugPrint('Orpheus N2 duplex failed: $e\n$st');
@@ -128,6 +129,8 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
               'Does not affect the main four-track recorder.\n\n'
               'N1 RECORDS A SHORT NATIVE TEST WAV.\n'
               'N2 PLAYS NATIVE CLICK BACKING AND RECORDS MIC AT THE SAME TIME.\n'
+              'N2B MEASURES CLICK ALIGNMENT IN THE RECORDED WAV (ENGINEERING).\n'
+              'USE PHONE SPEAKER SO THE MIC CAN HEAR CLICKS.\n'
               'NEITHER USES YOUR CURRENT PROJECT OR FOUR-TRACK SESSION.',
               style: TextStyle(
                 color: Colors.white54,
@@ -159,7 +162,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
                 foregroundColor: Colors.white,
               ),
               child: const Text(
-                'RUN N2 FULL-DUPLEX TEST',
+                'RUN N2 FULL-DUPLEX TEST (+ N2B TIMING)',
                 style: TextStyle(
                   fontFamily: 'monospace',
                   fontWeight: FontWeight.bold,
@@ -274,7 +277,16 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
         'estimatedInputOutputDeltaSamples=${d.estimatedInputOutputDeltaSamples}\n'
         'backingPlaySuccess=${d.backingPlaySuccess}\n'
         'recordSuccess=${d.recordSuccess}\n'
-        'wavWriteSuccess=${d.wavWriteSuccess}';
+        'wavWriteSuccess=${d.wavWriteSuccess}\n'
+        'clicksExpected=${d.clicksExpected}\n'
+        'clicksDetected=${d.clicksDetected}\n'
+        'analysisSuccess=${d.analysisSuccess}\n'
+        'analysisFailureReason=${d.analysisFailureReason}\n'
+        'medianOffsetSamples=${d.medianOffsetSamples}\n'
+        'medianOffsetMsTimes1000=${d.medianOffsetMsTimes1000}\n'
+        'spreadSamples=${d.spreadSamples}\n'
+        'confidencePercent=${d.confidencePercent}\n'
+        'recordLatencyOffsetSamples=${d.recordLatencyOffsetSamples}';
   }
 }
 

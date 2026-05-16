@@ -1,6 +1,6 @@
 import 'dart:ffi';
 
-/// Dart copy of native N2 duplex diagnostics.
+/// Dart copy of native N2 duplex diagnostics (includes N2B timing fields).
 class OrpheusDuplexDiagnosticsData {
   const OrpheusDuplexDiagnosticsData({
     required this.sampleRate,
@@ -28,6 +28,17 @@ class OrpheusDuplexDiagnosticsData {
     required this.firstOutputFrameSample,
     required this.firstInputFrameSample,
     required this.estimatedInputOutputDeltaSamples,
+    required this.clicksExpected,
+    required this.clicksDetected,
+    required this.analysisSuccess,
+    required this.analysisFailureReason,
+    required this.confidencePercent,
+    required this.medianOffsetMsTimes1000,
+    required this.medianOffsetSamples,
+    required this.minOffsetSamples,
+    required this.maxOffsetSamples,
+    required this.spreadSamples,
+    required this.recordLatencyOffsetSamples,
   });
 
   final int sampleRate;
@@ -57,11 +68,25 @@ class OrpheusDuplexDiagnosticsData {
   final int firstInputFrameSample;
   final int estimatedInputOutputDeltaSamples;
 
+  final int clicksExpected;
+  final int clicksDetected;
+  final int analysisSuccess;
+  final int analysisFailureReason;
+  final int confidencePercent;
+  final int medianOffsetMsTimes1000;
+  final int medianOffsetSamples;
+  final int minOffsetSamples;
+  final int maxOffsetSamples;
+  final int spreadSamples;
+  final int recordLatencyOffsetSamples;
+
   double get backingDurationSec =>
       sampleRate > 0 ? backingFramesGenerated / sampleRate : 0;
 
   double get recordedDurationSec =>
       sampleRate > 0 ? recordedFramesWritten / sampleRate : 0;
+
+  double get medianOffsetMs => medianOffsetMsTimes1000 / 1000.0;
 }
 
 /// Must match OrpheusDuplexDiagnostics in audio_types.h.
@@ -144,4 +169,40 @@ final class OrpheusDuplexDiagnostics extends Struct {
 
   @Int64()
   external int estimatedInputOutputDeltaSamples;
+
+  @Int32()
+  external int clicksExpected;
+
+  @Int32()
+  external int clicksDetected;
+
+  @Int32()
+  external int analysisSuccess;
+
+  @Int32()
+  external int analysisFailureReason;
+
+  @Int32()
+  external int confidencePercent;
+
+  @Int32()
+  external int medianOffsetMsTimes1000;
+
+  @Int32()
+  external int timingPadding;
+
+  @Int64()
+  external int medianOffsetSamples;
+
+  @Int64()
+  external int minOffsetSamples;
+
+  @Int64()
+  external int maxOffsetSamples;
+
+  @Int64()
+  external int spreadSamples;
+
+  @Int64()
+  external int recordLatencyOffsetSamples;
 }

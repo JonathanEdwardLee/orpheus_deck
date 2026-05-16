@@ -68,6 +68,20 @@ typedef struct OrpheusDuplexDiagnostics {
     int64_t firstOutputFrameSample;
     int64_t firstInputFrameSample;
     int64_t estimatedInputOutputDeltaSamples;
+
+    /** N2B timing analysis (worker thread, post-record). */
+    int32_t clicksExpected;
+    int32_t clicksDetected;
+    int32_t analysisSuccess;
+    int32_t analysisFailureReason;
+    int32_t confidencePercent;
+    int32_t medianOffsetMsTimes1000;
+    int32_t _timingPadding;
+    int64_t medianOffsetSamples;
+    int64_t minOffsetSamples;
+    int64_t maxOffsetSamples;
+    int64_t spreadSamples;
+    int64_t recordLatencyOffsetSamples;
 } OrpheusDuplexDiagnostics;
 
 #ifdef __cplusplus

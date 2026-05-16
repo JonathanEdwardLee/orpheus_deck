@@ -289,6 +289,17 @@ class OrpheusNativeBindings {
         firstOutputFrameSample: d.firstOutputFrameSample,
         firstInputFrameSample: d.firstInputFrameSample,
         estimatedInputOutputDeltaSamples: d.estimatedInputOutputDeltaSamples,
+        clicksExpected: d.clicksExpected,
+        clicksDetected: d.clicksDetected,
+        analysisSuccess: d.analysisSuccess,
+        analysisFailureReason: d.analysisFailureReason,
+        confidencePercent: d.confidencePercent,
+        medianOffsetMsTimes1000: d.medianOffsetMsTimes1000,
+        medianOffsetSamples: d.medianOffsetSamples,
+        minOffsetSamples: d.minOffsetSamples,
+        maxOffsetSamples: d.maxOffsetSamples,
+        spreadSamples: d.spreadSamples,
+        recordLatencyOffsetSamples: d.recordLatencyOffsetSamples,
       );
     } finally {
       calloc.free(ptr);

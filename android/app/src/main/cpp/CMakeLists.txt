@@ -17,6 +17,7 @@ add_library(orpheus_native SHARED
     oboe_engine.cpp
     duplex_engine.cpp
     click_backing.cpp
+    timing_analysis.cpp
     ring_buffer.cpp
     wav_writer.cpp
 )

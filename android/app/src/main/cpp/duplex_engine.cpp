@@ -274,6 +274,8 @@ bool DuplexEngine::startDuplex(const std::string& recordWavPath) {
     backingPlaySuccess_.store(false, std::memory_order_relaxed);
     recordSuccess_.store(false, std::memory_order_relaxed);
     duplexComplete_.store(false, std::memory_order_relaxed);
+    analysisComplete_.store(false, std::memory_order_relaxed);
+    timingResult_ = TimingAnalysisResult{};
     workerFinalizePending_.store(false, std::memory_order_release);
 
     recordedFramesWritten_.store(0, std::memory_order_relaxed);
@@ -302,7 +304,12 @@ bool DuplexEngine::startDuplex(const std::string& recordWavPath) {
 
 bool DuplexEngine::isComplete() const {
     return duplexComplete_.load(std::memory_order_acquire) &&
-           wavWriteSuccess_.load(std::memory_order_acquire);
+           wavWriteSuccess_.load(std::memory_order_acquire) &&
+           analysisComplete_.load(std::memory_order_acquire);
+}
+
+bool DuplexEngine::isAnalysisComplete() const {
+    return analysisComplete_.load(std::memory_order_acquire);
 }
 
 void DuplexEngine::markDuplexComplete() {
@@ -386,6 +393,28 @@ void DuplexEngine::finalizeWavFromRing() {
     if (!ok) {
         lastError_ = "N2 wav write failed";
     }
+
+    runTimingAnalysis(samples);
+    analysisComplete_.store(true, std::memory_order_release);
+}
+
+void DuplexEngine::runTimingAnalysis(const std::vector<float>& recordedSamples) {
+    timingResult_ = analyzeRecordedClickTiming(recordedSamples,
+                                                 sampleRate_.load(std::memory_order_relaxed),
+                                                 kDuplexClickCount,
+                                                 kTimingSearchWindowSamples);
+
+    ORPHEUS_LOGI(
+        "N2B timing: expected=%d detected=%d success=%d reason=%d "
+        "median=%lld spread=%lld recordLatencyOffset=%lld conf=%d%%",
+        timingResult_.clicksExpected,
+        timingResult_.clicksDetected,
+        timingResult_.analysisSuccess,
+        timingResult_.analysisFailureReason,
+        static_cast<long long>(timingResult_.medianOffsetSamples),
+        static_cast<long long>(timingResult_.spreadSamples),
+        static_cast<long long>(timingResult_.recordLatencyOffsetSamples),
+        timingResult_.confidencePercent);
 }
 
 void DuplexEngine::recordWorkerLoop() {
@@ -461,6 +490,18 @@ void DuplexEngine::fillDiagnostics(OrpheusDuplexDiagnostics* out) const {
         out->apiUsed = oboeApiToInt(outputStream_->getAudioApi());
         out->sampleRate = outputStream_->getSampleRate();
     }
+
+    out->clicksExpected = timingResult_.clicksExpected;
+    out->clicksDetected = timingResult_.clicksDetected;
+    out->analysisSuccess = timingResult_.analysisSuccess;
+    out->analysisFailureReason = timingResult_.analysisFailureReason;
+    out->confidencePercent = timingResult_.confidencePercent;
+    out->medianOffsetMsTimes1000 = timingResult_.medianOffsetMsTimes1000;
+    out->medianOffsetSamples = timingResult_.medianOffsetSamples;
+    out->minOffsetSamples = timingResult_.minOffsetSamples;
+    out->maxOffsetSamples = timingResult_.maxOffsetSamples;
+    out->spreadSamples = timingResult_.spreadSamples;
+    out->recordLatencyOffsetSamples = timingResult_.recordLatencyOffsetSamples;
 }
 
 void DuplexEngine::shutdown() {

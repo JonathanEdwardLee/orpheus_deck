@@ -11,6 +11,7 @@
 
 #include "audio_types.h"
 #include "ring_buffer.h"
+#include "timing_analysis.h"
 #include "wav_writer.h"
 
 namespace orpheus {
@@ -55,6 +56,7 @@ public:
     bool openStreams();
     bool startDuplex(const std::string& recordWavPath);
     bool isComplete() const;
+    bool isAnalysisComplete() const;
     void fillDiagnostics(OrpheusDuplexDiagnostics* out) const;
     void shutdown();
 
@@ -70,6 +72,7 @@ private:
     void handleInputFrames(const float* data, int32_t numFrames);
     void recordWorkerLoop();
     void finalizeWavFromRing();
+    void runTimingAnalysis(const std::vector<float>& recordedSamples);
     void markDuplexComplete();
 
     DuplexOutputCallback outputCallback_{this};
@@ -114,6 +117,9 @@ private:
     std::atomic<int32_t> sharedFallbackUsed_{0};
     std::atomic<int32_t> lastOpenErrorCode_{0};
     std::atomic<int32_t> androidSdkVersion_{0};
+
+    std::atomic<bool> analysisComplete_{false};
+    TimingAnalysisResult timingResult_;
 
     std::string lastError_;
 };
