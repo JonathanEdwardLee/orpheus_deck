@@ -62,8 +62,10 @@ public:
     const std::string& lastError() const { return lastError_; }
 
 private:
-    bool openOutputStream(bool exclusive);
-    bool openInputStream(bool exclusive);
+    void closeStreams();
+    bool openOutputStream(oboe::SharingMode sharing);
+    bool openInputStream(oboe::SharingMode sharing);
+    void noteOpenFailure(oboe::Result result, const char* label);
     void handleOutputFrames(float* data, int32_t numFrames);
     void handleInputFrames(const float* data, int32_t numFrames);
     void recordWorkerLoop();
@@ -80,7 +82,6 @@ private:
 
     std::thread workerThread_;
     std::atomic<bool> workerRunning_{false};
-    std::atomic<bool> workerStopRequested_{false};
     std::atomic<bool> workerFinalizePending_{false};
 
     std::string wavPath_;
@@ -91,20 +92,22 @@ private:
     std::atomic<bool> recording_{false};
     std::atomic<int64_t> recordedFrames_{0};
     std::atomic<int64_t> recordTargetFrames_{0};
-    std::atomic<int64_t> outputCallbackCount_{0};
-    std::atomic<int64_t> inputCallbackCount_{0};
 
     std::atomic<bool> inputOpened_{false};
     std::atomic<bool> outputOpened_{false};
     std::atomic<bool> wavWriteSuccess_{false};
-    std::atomic<bool> usedExclusiveSharing_{true};
 
-    std::atomic<int32_t> cachedFramesPerBurst_{0};
-    std::atomic<int32_t> cachedBufferSize_{0};
-    std::atomic<int32_t> cachedPerformanceMode_{0};
-    std::atomic<int32_t> cachedSharingMode_{0};
-    std::atomic<int32_t> cachedApiUsed_{0};
-    std::atomic<int32_t> cachedXRunCount_{0};
+    std::atomic<int32_t> requestedSampleRate_{kPreferredSampleRate};
+    std::atomic<int32_t> requestedSharingMode_{
+        static_cast<int32_t>(oboe::SharingMode::Exclusive)};
+    std::atomic<int32_t> requestedPerformanceMode_{
+        static_cast<int32_t>(oboe::PerformanceMode::LowLatency)};
+
+    std::atomic<int32_t> exclusiveAttempted_{0};
+    std::atomic<int32_t> sharedFallbackUsed_{0};
+    std::atomic<int32_t> unspecifiedAudioApi_{1};
+    std::atomic<int32_t> lastOpenErrorCode_{0};
+    std::atomic<int32_t> androidSdkVersion_{0};
 
     std::string lastError_;
 };

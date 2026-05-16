@@ -1,5 +1,6 @@
 #include "oboe_engine.h"
 
+#include <android/api-level.h>
 #include <android/log.h>
 #include <algorithm>
 #include <chrono>
@@ -36,24 +37,27 @@ int32_t readXRunCount(oboe::AudioStream* stream) {
     return 0;
 }
 
-void cacheStreamProperties(oboe::AudioStream* stream,
-                           std::atomic<int32_t>* framesPerBurst,
-                           std::atomic<int32_t>* bufferSize,
-                           std::atomic<int32_t>* performanceMode,
-                           std::atomic<int32_t>* sharingMode,
-                           std::atomic<int32_t>* apiUsed,
-                           std::atomic<int32_t>* xRunCount) {
-    if (stream == nullptr) {
-        return;
+const char* apiName(oboe::AudioApi api) {
+    switch (api) {
+        case oboe::AudioApi::AAudio:
+            return "AAudio";
+        case oboe::AudioApi::OpenSLES:
+            return "OpenSL ES";
+        case oboe::AudioApi::Unspecified:
+        default:
+            return "Unspecified";
     }
-    framesPerBurst->store(stream->getFramesPerBurst(), std::memory_order_relaxed);
-    bufferSize->store(stream->getBufferSizeInFrames(), std::memory_order_relaxed);
-    performanceMode->store(oboeModeToInt(stream->getPerformanceMode()),
-                           std::memory_order_relaxed);
-    sharingMode->store(oboeSharingToInt(stream->getSharingMode()),
-                       std::memory_order_relaxed);
-    apiUsed->store(oboeApiToInt(stream->getAudioApi()), std::memory_order_relaxed);
-    xRunCount->store(readXRunCount(stream), std::memory_order_relaxed);
+}
+
+const char* sharingName(oboe::SharingMode mode) {
+    switch (mode) {
+        case oboe::SharingMode::Exclusive:
+            return "Exclusive";
+        case oboe::SharingMode::Shared:
+            return "Shared";
+        default:
+            return "Unknown";
+    }
 }
 
 }  // namespace
@@ -67,7 +71,6 @@ oboe::DataCallbackResult OutputStreamCallback::onAudioReady(oboe::AudioStream* s
         return oboe::DataCallbackResult::Stop;
     }
     engine->handleOutputFrames(static_cast<float*>(audioData), numFrames);
-    engine->outputCallbackCount_.fetch_add(1, std::memory_order_relaxed);
     return oboe::DataCallbackResult::Continue;
 }
 
@@ -80,77 +83,127 @@ oboe::DataCallbackResult InputStreamCallback::onAudioReady(oboe::AudioStream* st
         return oboe::DataCallbackResult::Stop;
     }
     engine->handleInputFrames(static_cast<const float*>(audioData), numFrames);
-    engine->inputCallbackCount_.fetch_add(1, std::memory_order_relaxed);
     return oboe::DataCallbackResult::Continue;
 }
 
 bool OboeEngine::init() {
     lastError_.clear();
-  const int32_t rate = kPreferredSampleRate;
+    const int32_t rate = kPreferredSampleRate;
     sampleRate_.store(rate, std::memory_order_relaxed);
+    requestedSampleRate_.store(rate, std::memory_order_relaxed);
     captureRing_.reset(static_cast<size_t>(rate * kCaptureRingSeconds));
     captureScratch_.resize(static_cast<size_t>(rate), 0.0f);
 
-    workerRunning_.store(true, std::memory_order_release);
-    workerStopRequested_.store(false, std::memory_order_release);
-    workerFinalizePending_.store(false, std::memory_order_release);
-    workerThread_ = std::thread([this]() { recordWorkerLoop(); });
+    androidSdkVersion_.store(android_get_device_api_level(),
+                             std::memory_order_relaxed);
+    unspecifiedAudioApi_.store(1, std::memory_order_relaxed);
 
-    ORPHEUS_LOGI("OboeEngine init (ring %zu samples @ %d Hz)",
-                 captureRing_.available() + static_cast<size_t>(rate * kCaptureRingSeconds),
-                 rate);
+    if (!workerRunning_.load(std::memory_order_acquire)) {
+        workerRunning_.store(true, std::memory_order_release);
+        workerFinalizePending_.store(false, std::memory_order_release);
+        workerThread_ = std::thread([this]() { recordWorkerLoop(); });
+    }
+
+    ORPHEUS_LOGI(
+        "OboeEngine init: ring=%zu samples @ %d Hz, Android API %d "
+        "(setAudioApi NOT called — Oboe Unspecified)",
+        static_cast<size_t>(rate * kCaptureRingSeconds),
+        rate,
+        androidSdkVersion_.load(std::memory_order_relaxed));
     return true;
 }
 
-bool OboeEngine::openOutputStream(bool exclusive) {
+void OboeEngine::closeStreams() {
+    recording_.store(false, std::memory_order_release);
+    impulseFramesLeft_.store(0, std::memory_order_relaxed);
+
+    if (inputStream_) {
+        inputStream_->stop();
+        inputStream_->close();
+        inputStream_.reset();
+    }
+    if (outputStream_) {
+        outputStream_->stop();
+        outputStream_->close();
+        outputStream_.reset();
+    }
+
+    inputOpened_.store(false, std::memory_order_relaxed);
+    outputOpened_.store(false, std::memory_order_relaxed);
+}
+
+void OboeEngine::noteOpenFailure(oboe::Result result, const char* label) {
+    lastOpenErrorCode_.store(static_cast<int32_t>(result), std::memory_order_relaxed);
+    ORPHEUS_LOGE("%s failed: %s (code %d)", label, oboe::convertToText(result),
+                 static_cast<int32_t>(result));
+}
+
+bool OboeEngine::openOutputStream(oboe::SharingMode sharing) {
+    if (outputStream_) {
+        outputStream_->stop();
+        outputStream_->close();
+        outputStream_.reset();
+        outputOpened_.store(false, std::memory_order_relaxed);
+    }
+
+    requestedSharingMode_.store(oboeSharingToInt(sharing), std::memory_order_relaxed);
+    requestedPerformanceMode_.store(
+        oboeModeToInt(oboe::PerformanceMode::LowLatency), std::memory_order_relaxed);
+
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Output)
         ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
-        ->setSharingMode(exclusive ? oboe::SharingMode::Exclusive
-                                   : oboe::SharingMode::Shared)
+        ->setSharingMode(sharing)
         ->setSampleRate(kPreferredSampleRate)
         ->setChannelCount(oboe::ChannelCount::Mono)
         ->setFormat(oboe::AudioFormat::Float)
         ->setCallback(&outputCallback_);
+    // Do not call setAudioApi — Oboe picks AAudio when available (API 26+).
 
     oboe::Result result = builder.openStream(outputStream_);
     if (result != oboe::Result::OK) {
+        noteOpenFailure(result, "open output");
         lastError_ = std::string("open output failed: ") + oboe::convertToText(result);
-        ORPHEUS_LOGE("%s", lastError_.c_str());
         return false;
     }
 
     result = outputStream_->requestStart();
     if (result != oboe::Result::OK) {
+        noteOpenFailure(result, "start output");
         lastError_ = std::string("start output failed: ") + oboe::convertToText(result);
-        ORPHEUS_LOGE("%s", lastError_.c_str());
+        outputStream_->close();
+        outputStream_.reset();
         return false;
     }
 
     sampleRate_.store(outputStream_->getSampleRate(), std::memory_order_relaxed);
-    cacheStreamProperties(outputStream_.get(),
-                          &cachedFramesPerBurst_,
-                          &cachedBufferSize_,
-                          &cachedPerformanceMode_,
-                          &cachedSharingMode_,
-                          &cachedApiUsed_,
-                          &cachedXRunCount_);
     outputOpened_.store(true, std::memory_order_release);
-    ORPHEUS_LOGI("Output stream open: rate=%d burst=%d buf=%d api=%d sharing=%d",
-                 outputStream_->getSampleRate(),
-                 outputStream_->getFramesPerBurst(),
-                 outputStream_->getBufferSizeInFrames(),
-                 oboeApiToInt(outputStream_->getAudioApi()),
-                 oboeSharingToInt(outputStream_->getSharingMode()));
+
+    ORPHEUS_LOGI(
+        "Output open OK: rate=%d burst=%d buf=%d api=%s(%d) sharing=%s(%d) perf=%d",
+        outputStream_->getSampleRate(),
+        outputStream_->getFramesPerBurst(),
+        outputStream_->getBufferSizeInFrames(),
+        apiName(outputStream_->getAudioApi()),
+        oboeApiToInt(outputStream_->getAudioApi()),
+        sharingName(outputStream_->getSharingMode()),
+        oboeSharingToInt(outputStream_->getSharingMode()),
+        oboeModeToInt(outputStream_->getPerformanceMode()));
     return true;
 }
 
-bool OboeEngine::openInputStream(bool exclusive) {
+bool OboeEngine::openInputStream(oboe::SharingMode sharing) {
+    if (inputStream_) {
+        inputStream_->stop();
+        inputStream_->close();
+        inputStream_.reset();
+        inputOpened_.store(false, std::memory_order_relaxed);
+    }
+
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Input)
         ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
-        ->setSharingMode(exclusive ? oboe::SharingMode::Exclusive
-                                   : oboe::SharingMode::Shared)
+        ->setSharingMode(sharing)
         ->setSampleRate(sampleRate_.load(std::memory_order_relaxed))
         ->setChannelCount(oboe::ChannelCount::Mono)
         ->setFormat(oboe::AudioFormat::Float)
@@ -158,58 +211,91 @@ bool OboeEngine::openInputStream(bool exclusive) {
 
     oboe::Result result = builder.openStream(inputStream_);
     if (result != oboe::Result::OK) {
+        noteOpenFailure(result, "open input");
         lastError_ = std::string("open input failed: ") + oboe::convertToText(result);
-        ORPHEUS_LOGE("%s", lastError_.c_str());
         return false;
     }
 
     result = inputStream_->requestStart();
     if (result != oboe::Result::OK) {
+        noteOpenFailure(result, "start input");
         lastError_ = std::string("start input failed: ") + oboe::convertToText(result);
-        ORPHEUS_LOGE("%s", lastError_.c_str());
+        inputStream_->close();
+        inputStream_.reset();
         return false;
     }
 
-    cacheStreamProperties(inputStream_.get(),
-                          &cachedFramesPerBurst_,
-                          &cachedBufferSize_,
-                          &cachedPerformanceMode_,
-                          &cachedSharingMode_,
-                          &cachedApiUsed_,
-                          &cachedXRunCount_);
     inputOpened_.store(true, std::memory_order_release);
-    ORPHEUS_LOGI("Input stream open: rate=%d burst=%d buf=%d api=%d sharing=%d",
-                 inputStream_->getSampleRate(),
-                 inputStream_->getFramesPerBurst(),
-                 inputStream_->getBufferSizeInFrames(),
-                 oboeApiToInt(inputStream_->getAudioApi()),
-                 oboeSharingToInt(inputStream_->getSharingMode()));
+
+    ORPHEUS_LOGI(
+        "Input open OK: rate=%d burst=%d buf=%d api=%s(%d) sharing=%s(%d) perf=%d",
+        inputStream_->getSampleRate(),
+        inputStream_->getFramesPerBurst(),
+        inputStream_->getBufferSizeInFrames(),
+        apiName(inputStream_->getAudioApi()),
+        oboeApiToInt(inputStream_->getAudioApi()),
+        sharingName(inputStream_->getSharingMode()),
+        oboeSharingToInt(inputStream_->getSharingMode()),
+        oboeModeToInt(inputStream_->getPerformanceMode()));
     return true;
 }
 
 bool OboeEngine::openStreams() {
     lastError_.clear();
-    wavWriteSuccess_.store(false, std::memory_order_relaxed);
-    usedExclusiveSharing_.store(true, std::memory_order_relaxed);
+    closeStreams();
 
-    if (!openOutputStream(true)) {
-        ORPHEUS_LOGI("Retrying output with Shared sharing mode");
-        usedExclusiveSharing_.store(false, std::memory_order_relaxed);
-        if (!openOutputStream(false)) {
+    wavWriteSuccess_.store(false, std::memory_order_relaxed);
+    exclusiveAttempted_.store(0, std::memory_order_relaxed);
+    sharedFallbackUsed_.store(0, std::memory_order_relaxed);
+    lastOpenErrorCode_.store(0, std::memory_order_relaxed);
+    unspecifiedAudioApi_.store(1, std::memory_order_relaxed);
+
+    const int32_t sdk = androidSdkVersion_.load(std::memory_order_relaxed);
+    ORPHEUS_LOGI(
+        "openStreams: Android API %d, AAudio available=%s, "
+        "requesting 48 kHz LowLatency Exclusive (no setAudioApi)",
+        sdk,
+        sdk >= 26 ? "yes" : "no");
+
+    exclusiveAttempted_.store(1, std::memory_order_relaxed);
+    if (!openOutputStream(oboe::SharingMode::Exclusive)) {
+        sharedFallbackUsed_.store(1, std::memory_order_relaxed);
+        ORPHEUS_LOGI("Retrying output with Shared sharing (last error %d)",
+                     lastOpenErrorCode_.load(std::memory_order_relaxed));
+        if (!openOutputStream(oboe::SharingMode::Shared)) {
             return false;
         }
     }
 
-    if (!openInputStream(usedExclusiveSharing_.load(std::memory_order_relaxed))) {
-        ORPHEUS_LOGI("Retrying input with Shared sharing mode");
-        if (inputStream_) {
-            inputStream_->stop();
-            inputStream_->close();
-            inputStream_.reset();
-        }
-        inputOpened_.store(false, std::memory_order_relaxed);
-        if (!openInputStream(false)) {
+    const oboe::SharingMode inputSharing =
+        sharedFallbackUsed_.load(std::memory_order_relaxed) != 0
+            ? oboe::SharingMode::Shared
+            : oboe::SharingMode::Exclusive;
+
+    if (!openInputStream(inputSharing)) {
+        if (inputSharing == oboe::SharingMode::Exclusive) {
+            sharedFallbackUsed_.store(1, std::memory_order_relaxed);
+            ORPHEUS_LOGI("Retrying input with Shared sharing (last error %d)",
+                         lastOpenErrorCode_.load(std::memory_order_relaxed));
+            if (!openInputStream(oboe::SharingMode::Shared)) {
+                return false;
+            }
+        } else {
             return false;
+        }
+    }
+
+    if (outputStream_) {
+        const auto api = outputStream_->getAudioApi();
+        if (api == oboe::AudioApi::OpenSLES) {
+            ORPHEUS_LOGI(
+                "Oboe selected OpenSL ES (not forced by Orpheus). "
+                "Common on some devices for float duplex; see logcat above for "
+                "Exclusive/Shared attempts. API %d supports AAudio=%s",
+                sdk,
+                sdk >= 26 ? "true" : "false");
+        } else if (api == oboe::AudioApi::AAudio) {
+            ORPHEUS_LOGI("Oboe selected AAudio");
         }
     }
 
@@ -245,6 +331,7 @@ bool OboeEngine::startRecord(const std::string& wavPath, int32_t durationMs) {
     wavPath_ = wavPath;
     wavWriteSuccess_.store(false, std::memory_order_relaxed);
     recordedFrames_.store(0, std::memory_order_relaxed);
+    workerFinalizePending_.store(false, std::memory_order_relaxed);
 
     const int32_t rate = sampleRate_.load(std::memory_order_relaxed);
     const int64_t target =
@@ -342,13 +429,23 @@ void OboeEngine::fillDiagnostics(OrpheusStreamDiagnostics* out) const {
     }
     std::memset(out, 0, sizeof(OrpheusStreamDiagnostics));
 
-    out->sampleRate = sampleRate_.load(std::memory_order_relaxed);
-    out->framesPerBurst = cachedFramesPerBurst_.load(std::memory_order_relaxed);
-    out->bufferSizeInFrames = cachedBufferSize_.load(std::memory_order_relaxed);
-    out->xRunCount = cachedXRunCount_.load(std::memory_order_relaxed);
-    out->performanceMode = cachedPerformanceMode_.load(std::memory_order_relaxed);
-    out->sharingMode = cachedSharingMode_.load(std::memory_order_relaxed);
-    out->apiUsed = cachedApiUsed_.load(std::memory_order_relaxed);
+    out->requestedSampleRate =
+        requestedSampleRate_.load(std::memory_order_relaxed);
+    out->requestedSharingMode =
+        requestedSharingMode_.load(std::memory_order_relaxed);
+    out->requestedPerformanceMode =
+        requestedPerformanceMode_.load(std::memory_order_relaxed);
+    out->exclusiveAttempted =
+        exclusiveAttempted_.load(std::memory_order_relaxed);
+    out->sharedFallbackUsed =
+        sharedFallbackUsed_.load(std::memory_order_relaxed);
+    out->unspecifiedAudioApi =
+        unspecifiedAudioApi_.load(std::memory_order_relaxed);
+    out->lastOpenErrorCode =
+        lastOpenErrorCode_.load(std::memory_order_relaxed);
+    out->androidSdkVersion =
+        androidSdkVersion_.load(std::memory_order_relaxed);
+
     out->inputStreamOpened =
         inputOpened_.load(std::memory_order_relaxed) ? 1 : 0;
     out->outputStreamOpened =
@@ -357,38 +454,31 @@ void OboeEngine::fillDiagnostics(OrpheusStreamDiagnostics* out) const {
         wavWriteSuccess_.load(std::memory_order_relaxed) ? 1 : 0;
 
     if (outputStream_) {
-        out->xRunCount = readXRunCount(outputStream_.get());
+        out->actualSampleRate = outputStream_->getSampleRate();
+        out->sampleRate = out->actualSampleRate;
         out->framesPerBurst = outputStream_->getFramesPerBurst();
         out->bufferSizeInFrames = outputStream_->getBufferSizeInFrames();
+        out->xRunCount = readXRunCount(outputStream_.get());
         out->performanceMode = oboeModeToInt(outputStream_->getPerformanceMode());
         out->sharingMode = oboeSharingToInt(outputStream_->getSharingMode());
         out->apiUsed = oboeApiToInt(outputStream_->getAudioApi());
-        out->sampleRate = outputStream_->getSampleRate();
+        out->actualPerformanceMode = out->performanceMode;
+        out->actualSharingMode = out->sharingMode;
+    } else {
+        out->actualSampleRate = sampleRate_.load(std::memory_order_relaxed);
+        out->sampleRate = out->actualSampleRate;
     }
 }
 
 void OboeEngine::shutdown() {
     recording_.store(false, std::memory_order_release);
-    workerStopRequested_.store(true, std::memory_order_release);
+    workerFinalizePending_.store(false, std::memory_order_release);
     workerRunning_.store(false, std::memory_order_release);
     if (workerThread_.joinable()) {
         workerThread_.join();
     }
 
-    if (inputStream_) {
-        inputStream_->stop();
-        inputStream_->close();
-        inputStream_.reset();
-    }
-    if (outputStream_) {
-        outputStream_->stop();
-        outputStream_->close();
-        outputStream_.reset();
-    }
-
-    inputOpened_.store(false, std::memory_order_relaxed);
-    outputOpened_.store(false, std::memory_order_relaxed);
-    impulseFramesLeft_.store(0, std::memory_order_relaxed);
+    closeStreams();
     ORPHEUS_LOGI("OboeEngine shutdown");
 }
 

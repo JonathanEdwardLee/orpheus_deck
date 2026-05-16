@@ -5,6 +5,7 @@ import 'package:open_file/open_file.dart';
 
 import 'orpheus_native_audio.dart';
 import 'orpheus_native_bindings.dart';
+import 'orpheus_native_labels.dart';
 
 /// Hidden Phase N1 dev screen — not linked from normal user flow.
 class OrpheusNativeTestScreen extends StatefulWidget {
@@ -32,12 +33,9 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
       if (!mounted) return;
       setState(() {
         _diag = diag;
-        _log = 'Success.\nWAV: $path\n'
-            'rate=${diag.sampleRate} burst=${diag.framesPerBurst} '
-            'buf=${diag.bufferSizeInFrames} xruns=${diag.xRunCount}\n'
-            'api=${OrpheusNativeAudio.apiLabel(diag.apiUsed)} '
-            'perf=${OrpheusNativeAudio.performanceLabel(diag.performanceMode)} '
-            'sharing=${OrpheusNativeAudio.sharingLabel(diag.sharingMode)}';
+        _log = 'Success.\n'
+            'WAV (~${(diag.actualSampleRate * 2.5 / 1000).toStringAsFixed(1)} s target): $path\n\n'
+            '${OrpheusNativeLabels.formatDiagnosticsSummary(diag)}';
       });
     } catch (e, st) {
       debugPrint('Orpheus N1 handshake failed: $e\n$st');
@@ -71,7 +69,10 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
           children: [
             const Text(
               'Phase N1 Oboe handshake — dev only.\n'
-              'Does not affect the main four-track recorder.',
+              'Does not affect the main four-track recorder.\n\n'
+              'N1 RECORDS A SHORT NATIVE TEST WAV.\n'
+              'IT DOES NOT USE YOUR CURRENT PROJECT.\n'
+              'IT DOES NOT RENDER OR PLAY THE FOUR-TRACK SESSION.',
               style: TextStyle(
                 color: Colors.white54,
                 fontFamily: 'monospace',
@@ -125,17 +126,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
             if (_diag != null) ...[
               const Divider(color: Colors.white24),
               Text(
-                'Diagnostics struct:\n'
-                'sampleRate=${_diag!.sampleRate}\n'
-                'framesPerBurst=${_diag!.framesPerBurst}\n'
-                'bufferSizeInFrames=${_diag!.bufferSizeInFrames}\n'
-                'xRunCount=${_diag!.xRunCount}\n'
-                'performanceMode=${_diag!.performanceMode}\n'
-                'sharingMode=${_diag!.sharingMode}\n'
-                'apiUsed=${_diag!.apiUsed}\n'
-                'inputStreamOpened=${_diag!.inputStreamOpened}\n'
-                'outputStreamOpened=${_diag!.outputStreamOpened}\n'
-                'wavWriteSuccess=${_diag!.wavWriteSuccess}',
+                _rawDiagnosticsBlock(_diag!),
                 style: const TextStyle(
                   color: Colors.white38,
                   fontFamily: 'monospace',
@@ -148,6 +139,31 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
         ),
       ),
     );
+  }
+
+  String _rawDiagnosticsBlock(OrpheusNativeDiagnosticsData d) {
+    return 'Raw struct fields:\n'
+        'sampleRate=${d.sampleRate}\n'
+        'actualSampleRate=${d.actualSampleRate}\n'
+        'requestedSampleRate=${d.requestedSampleRate}\n'
+        'framesPerBurst=${d.framesPerBurst}\n'
+        'bufferSizeInFrames=${d.bufferSizeInFrames}\n'
+        'xRunCount=${d.xRunCount}\n'
+        'performanceMode=${d.performanceMode}\n'
+        'actualPerformanceMode=${d.actualPerformanceMode}\n'
+        'requestedPerformanceMode=${d.requestedPerformanceMode}\n'
+        'sharingMode=${d.sharingMode}\n'
+        'actualSharingMode=${d.actualSharingMode}\n'
+        'requestedSharingMode=${d.requestedSharingMode}\n'
+        'apiUsed=${d.apiUsed}\n'
+        'exclusiveAttempted=${d.exclusiveAttempted}\n'
+        'sharedFallbackUsed=${d.sharedFallbackUsed}\n'
+        'unspecifiedAudioApi=${d.unspecifiedAudioApi}\n'
+        'lastOpenErrorCode=${d.lastOpenErrorCode}\n'
+        'androidSdkVersion=${d.androidSdkVersion}\n'
+        'inputStreamOpened=${d.inputStreamOpened}\n'
+        'outputStreamOpened=${d.outputStreamOpened}\n'
+        'wavWriteSuccess=${d.wavWriteSuccess}';
   }
 }
 

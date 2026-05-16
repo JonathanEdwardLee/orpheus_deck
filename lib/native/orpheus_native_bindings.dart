@@ -16,6 +16,17 @@ class OrpheusNativeDiagnosticsData {
     required this.inputStreamOpened,
     required this.outputStreamOpened,
     required this.wavWriteSuccess,
+    required this.requestedSampleRate,
+    required this.actualSampleRate,
+    required this.requestedSharingMode,
+    required this.actualSharingMode,
+    required this.requestedPerformanceMode,
+    required this.actualPerformanceMode,
+    required this.exclusiveAttempted,
+    required this.sharedFallbackUsed,
+    required this.unspecifiedAudioApi,
+    required this.lastOpenErrorCode,
+    required this.androidSdkVersion,
   });
 
   final int sampleRate;
@@ -28,6 +39,18 @@ class OrpheusNativeDiagnosticsData {
   final int inputStreamOpened;
   final int outputStreamOpened;
   final int wavWriteSuccess;
+
+  final int requestedSampleRate;
+  final int actualSampleRate;
+  final int requestedSharingMode;
+  final int actualSharingMode;
+  final int requestedPerformanceMode;
+  final int actualPerformanceMode;
+  final int exclusiveAttempted;
+  final int sharedFallbackUsed;
+  final int unspecifiedAudioApi;
+  final int lastOpenErrorCode;
+  final int androidSdkVersion;
 }
 
 /// Native Phase N1 diagnostics — must match OrpheusStreamDiagnostics in audio_types.h.
@@ -62,6 +85,39 @@ final class OrpheusStreamDiagnostics extends Struct {
 
   @Int32()
   external int wavWriteSuccess;
+
+  @Int32()
+  external int requestedSampleRate;
+
+  @Int32()
+  external int actualSampleRate;
+
+  @Int32()
+  external int requestedSharingMode;
+
+  @Int32()
+  external int actualSharingMode;
+
+  @Int32()
+  external int requestedPerformanceMode;
+
+  @Int32()
+  external int actualPerformanceMode;
+
+  @Int32()
+  external int exclusiveAttempted;
+
+  @Int32()
+  external int sharedFallbackUsed;
+
+  @Int32()
+  external int unspecifiedAudioApi;
+
+  @Int32()
+  external int lastOpenErrorCode;
+
+  @Int32()
+  external int androidSdkVersion;
 }
 
 /// Loads liborpheus_native.so (Android N1 Oboe handshake).
@@ -77,6 +133,11 @@ class OrpheusNativeBindings {
     return _instance ??= OrpheusNativeBindings._(
       DynamicLibrary.open('liborpheus_native.so'),
     );
+  }
+
+  /// Clears cached library handle so a new process load can occur after hot restart.
+  static void resetInstance() {
+    _instance = null;
   }
 
   final DynamicLibrary _lib;
@@ -141,6 +202,17 @@ class OrpheusNativeBindings {
         inputStreamOpened: d.inputStreamOpened,
         outputStreamOpened: d.outputStreamOpened,
         wavWriteSuccess: d.wavWriteSuccess,
+        requestedSampleRate: d.requestedSampleRate,
+        actualSampleRate: d.actualSampleRate,
+        requestedSharingMode: d.requestedSharingMode,
+        actualSharingMode: d.actualSharingMode,
+        requestedPerformanceMode: d.requestedPerformanceMode,
+        actualPerformanceMode: d.actualPerformanceMode,
+        exclusiveAttempted: d.exclusiveAttempted,
+        sharedFallbackUsed: d.sharedFallbackUsed,
+        unspecifiedAudioApi: d.unspecifiedAudioApi,
+        lastOpenErrorCode: d.lastOpenErrorCode,
+        androidSdkVersion: d.androidSdkVersion,
       );
     } finally {
       calloc.free(ptr);
