@@ -8,6 +8,19 @@ The app should behave like a simple musical device, not a full editing workstati
 
 ---
 
+## Native Audio Engine Direction
+
+- Orpheus Deck keeps the retro cassette four-track interface.
+- The audio engine is moving to native Android C++ / Oboe.
+- Flutter remains the UI/workflow layer.
+- Native engine owns timing-critical recording/playback.
+- Lo-fi is optional, not a forced limitation.
+- Serious overdub timing is a core product requirement.
+
+See **ORPHEUS_NATIVE_AUDIO_PLAN.md** for architecture, timing model, and native development phases.
+
+---
+
 ## PRIMARY PURPOSE
 
 The main purpose is fast capture.
