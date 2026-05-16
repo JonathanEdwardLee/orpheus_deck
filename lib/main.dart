@@ -11,7 +11,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/foundation.dart' show compute, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:record/record.dart';
@@ -28,6 +28,7 @@ import 'package:audio_session/audio_session.dart' as as_sess;
 import 'widgets/tape_reel_transport.dart';
 
 import 'orpheus_latency_calibration.dart';
+import 'native/orpheus_native_test_screen.dart';
 
 /// One cassette side — fixed transport length (0 … tapeLengthMs).
 /// Clip lengths do not shorten the tape; matches ORPHEUS_DESIGN_MANIFESTO.md.
@@ -630,16 +631,24 @@ void showOrpheusDeckSettingsDialog(
                     ),
                   ),
                   const SizedBox(height: 8),
-                  const Text(
-                    'Orpheus Deck\n'
-                    'Four-Track Audio Recorder\n'
-                    'MK-I Beta\n'
-                    'Version $kOrpheusAppVersion',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontFamily: 'monospace',
-                      fontSize: 10,
-                      height: 1.4,
+                  GestureDetector(
+                    onLongPress: kDebugMode && Platform.isAndroid
+                        ? () {
+                            Navigator.pop(dialogContext);
+                            openOrpheusNativeTestScreen(outerContext);
+                          }
+                        : null,
+                    child: const Text(
+                      'Orpheus Deck\n'
+                      'Four-Track Audio Recorder\n'
+                      'MK-I Beta\n'
+                      'Version $kOrpheusAppVersion',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontFamily: 'monospace',
+                        fontSize: 10,
+                        height: 1.4,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 20),
