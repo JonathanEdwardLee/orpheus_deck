@@ -82,6 +82,29 @@ typedef struct OrpheusDuplexDiagnostics {
     int64_t maxOffsetSamples;
     int64_t spreadSamples;
     int64_t recordLatencyOffsetSamples;
+
+    /** N2D compensation proof (effectiveTapeStart = trackTapeStart - recordLatencyOffset). */
+    int32_t compensatedAlignmentSuccess;
+    int32_t compensatedQualityPercent;
+    int32_t compensatedMedianResidualMsTimes1000;
+    int32_t perClickOffsetCount;
+    int64_t appliedCompensationSamples;
+    int64_t compensatedMedianResidualSamples;
+    int64_t compensatedResidualMinSamples;
+    int64_t compensatedResidualMaxSamples;
+    int64_t compensatedResidualSpreadSamples;
+    int64_t perClickOffset0;
+    int64_t perClickOffset1;
+    int64_t perClickOffset2;
+    int64_t perClickOffset3;
+    int64_t perClickOffset4;
+    int64_t perClickOffset5;
+    int64_t perClickResidual0;
+    int64_t perClickResidual1;
+    int64_t perClickResidual2;
+    int64_t perClickResidual3;
+    int64_t perClickResidual4;
+    int64_t perClickResidual5;
 } OrpheusDuplexDiagnostics;
 
 #ifdef __cplusplus

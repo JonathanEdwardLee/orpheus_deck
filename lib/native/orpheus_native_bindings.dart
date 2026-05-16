@@ -300,6 +300,32 @@ class OrpheusNativeBindings {
         maxOffsetSamples: d.maxOffsetSamples,
         spreadSamples: d.spreadSamples,
         recordLatencyOffsetSamples: d.recordLatencyOffsetSamples,
+        compensatedAlignmentSuccess: d.compensatedAlignmentSuccess,
+        compensatedQualityPercent: d.compensatedQualityPercent,
+        compensatedMedianResidualMsTimes1000:
+            d.compensatedMedianResidualMsTimes1000,
+        perClickOffsetCount: d.perClickOffsetCount,
+        appliedCompensationSamples: d.appliedCompensationSamples,
+        compensatedMedianResidualSamples: d.compensatedMedianResidualSamples,
+        compensatedResidualMinSamples: d.compensatedResidualMinSamples,
+        compensatedResidualMaxSamples: d.compensatedResidualMaxSamples,
+        compensatedResidualSpreadSamples: d.compensatedResidualSpreadSamples,
+        perClickOffsets: [
+          d.perClickOffset0,
+          d.perClickOffset1,
+          d.perClickOffset2,
+          d.perClickOffset3,
+          d.perClickOffset4,
+          d.perClickOffset5,
+        ],
+        perClickResiduals: [
+          d.perClickResidual0,
+          d.perClickResidual1,
+          d.perClickResidual2,
+          d.perClickResidual3,
+          d.perClickResidual4,
+          d.perClickResidual5,
+        ],
       );
     } finally {
       calloc.free(ptr);
