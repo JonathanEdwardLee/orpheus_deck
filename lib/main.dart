@@ -1,17 +1,7 @@
 /// ORPHEUS DECK
-/// Orpheus Deck — four-track recorder
-///
-/// IMPORTANT:
-/// This app is intentionally NOT a modern DAW.
-/// Read ORPHEUS_DESIGN_MANIFESTO.md before making architectural changes.
-///
-/// Core philosophy:
-/// - fast idea capture
-/// - four-track limitation
-/// - cassette/tape workflow
-/// - lo-fi experimentation
-/// - minimal editing
-/// - hardware-style interaction
+/// Retro cassette interface, pro native audio engine.
+/// Read ORPHEUS_DESIGN_MANIFESTO.md and ORPHEUS_NATIVE_AUDIO_PLAN.md
+/// before making architectural audio changes.
 
 library;
 
