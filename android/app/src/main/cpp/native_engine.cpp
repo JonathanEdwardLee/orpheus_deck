@@ -6,11 +6,13 @@
 
 #include "duplex_engine.h"
 #include "oboe_engine.h"
+#include "playback_engine.h"
 
 namespace {
 
 std::unique_ptr<orpheus::OboeEngine> gEngine;
 std::unique_ptr<orpheus::DuplexEngine> gDuplexEngine;
+std::unique_ptr<orpheus::PlaybackEngine> gPlaybackEngine;
 std::string gLastError;
 /** Only for last_error string lifetime — not used in audio callbacks. */
 std::mutex gErrorMutex;
@@ -25,6 +27,10 @@ void setError(const std::string& msg) {
 extern "C" {
 
 int32_t orpheus_native_init(void) {
+    if (gPlaybackEngine) {
+        gPlaybackEngine->shutdown();
+        gPlaybackEngine.reset();
+    }
     if (gEngine) {
         gEngine->shutdown();
         gEngine.reset();
@@ -103,6 +109,10 @@ void orpheus_native_shutdown(void) {
 }
 
 int32_t orpheus_native_n2_init(void) {
+    if (gPlaybackEngine) {
+        gPlaybackEngine->shutdown();
+        gPlaybackEngine.reset();
+    }
     if (gDuplexEngine) {
         gDuplexEngine->shutdown();
         gDuplexEngine.reset();
@@ -164,6 +174,120 @@ void orpheus_native_n2_shutdown(void) {
     if (gDuplexEngine) {
         gDuplexEngine->shutdown();
         gDuplexEngine.reset();
+    }
+}
+
+static void shutdownOtherEnginesForN3() {
+    if (gEngine) {
+        gEngine->shutdown();
+        gEngine.reset();
+    }
+    if (gDuplexEngine) {
+        gDuplexEngine->shutdown();
+        gDuplexEngine.reset();
+    }
+}
+
+int32_t orpheus_n3_init(void) {
+    shutdownOtherEnginesForN3();
+    if (gPlaybackEngine) {
+        gPlaybackEngine->shutdown();
+        gPlaybackEngine.reset();
+    }
+    gPlaybackEngine = std::make_unique<orpheus::PlaybackEngine>();
+    if (!gPlaybackEngine->init()) {
+        setError(gPlaybackEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3_generate_test_wav(const char* path) {
+    if (!gPlaybackEngine) {
+        setError("N3 engine not initialized");
+        return -1;
+    }
+    if (path == nullptr) {
+        setError("N3 null wav path");
+        return -1;
+    }
+    if (!gPlaybackEngine->generateTestWav(std::string(path))) {
+        setError(gPlaybackEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3_load_wav(const char* path) {
+    if (!gPlaybackEngine) {
+        setError("N3 engine not initialized");
+        return -1;
+    }
+    if (path == nullptr) {
+        setError("N3 null wav path");
+        return -1;
+    }
+    if (!gPlaybackEngine->loadWav(std::string(path))) {
+        setError(gPlaybackEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3_open_streams(void) {
+    if (!gPlaybackEngine) {
+        setError("N3 engine not initialized");
+        return -1;
+    }
+    if (!gPlaybackEngine->openStreams()) {
+        setError(gPlaybackEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3_start_playback(const int64_t start_sample) {
+    if (!gPlaybackEngine) {
+        setError("N3 engine not initialized");
+        return -1;
+    }
+    if (!gPlaybackEngine->startPlayback(start_sample)) {
+        setError(gPlaybackEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+void orpheus_n3_stop_playback(void) {
+    if (gPlaybackEngine) {
+        gPlaybackEngine->stopPlayback();
+    }
+}
+
+int64_t orpheus_n3_get_transport_sample(void) {
+    if (!gPlaybackEngine) {
+        return 0;
+    }
+    return gPlaybackEngine->getTransportSample();
+}
+
+int32_t orpheus_n3_is_playback_complete(void) {
+    if (!gPlaybackEngine) {
+        return 0;
+    }
+    return gPlaybackEngine->isPlaybackComplete() ? 1 : 0;
+}
+
+void orpheus_n3_get_diagnostics(OrpheusN3PlaybackDiagnostics* out) {
+    if (gPlaybackEngine && out != nullptr) {
+        gPlaybackEngine->fillDiagnostics(out);
+    }
+}
+
+void orpheus_n3_shutdown(void) {
+    if (gPlaybackEngine) {
+        gPlaybackEngine->shutdown();
+        gPlaybackEngine.reset();
     }
 }
 

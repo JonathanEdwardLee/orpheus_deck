@@ -16,10 +16,13 @@ add_library(orpheus_native SHARED
     native_engine.cpp
     oboe_engine.cpp
     duplex_engine.cpp
+    playback_engine.cpp
     click_backing.cpp
     timing_analysis.cpp
     ring_buffer.cpp
     wav_writer.cpp
+    wav_reader.cpp
+    wav_test_tone.cpp
 )
 
 target_include_directories(orpheus_native PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

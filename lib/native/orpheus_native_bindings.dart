@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:ffi/ffi.dart';
 
 import 'orpheus_native_duplex_bindings.dart';
+import 'orpheus_native_n3_bindings.dart';
 
 /// Dart copy of native diagnostics (safe after FFI buffer is freed).
 class OrpheusNativeDiagnosticsData {
@@ -257,6 +258,90 @@ class OrpheusNativeBindings {
   late final void Function() n2Shutdown = lib
       .lookup<NativeFunction<Void Function()>>('orpheus_native_n2_shutdown')
       .asFunction();
+
+  late final int Function() n3Init = lib
+      .lookup<NativeFunction<Int32 Function()>>('orpheus_n3_init')
+      .asFunction();
+
+  late final int Function(Pointer<Utf8> path) n3GenerateTestWav = lib
+      .lookup<NativeFunction<Int32 Function(Pointer<Utf8> path)>>(
+        'orpheus_n3_generate_test_wav',
+      )
+      .asFunction();
+
+  late final int Function(Pointer<Utf8> path) n3LoadWav = lib
+      .lookup<NativeFunction<Int32 Function(Pointer<Utf8> path)>>(
+        'orpheus_n3_load_wav',
+      )
+      .asFunction();
+
+  late final int Function() n3OpenStreams = lib
+      .lookup<NativeFunction<Int32 Function()>>('orpheus_n3_open_streams')
+      .asFunction();
+
+  late final int Function(int startSample) n3StartPlayback = lib
+      .lookup<NativeFunction<Int32 Function(Int64 startSample)>>(
+        'orpheus_n3_start_playback',
+      )
+      .asFunction();
+
+  late final void Function() n3StopPlayback = lib
+      .lookup<NativeFunction<Void Function()>>('orpheus_n3_stop_playback')
+      .asFunction();
+
+  late final int Function() n3GetTransportSample = lib
+      .lookup<NativeFunction<Int64 Function()>>('orpheus_n3_get_transport_sample')
+      .asFunction();
+
+  late final int Function() n3IsPlaybackComplete = lib
+      .lookup<NativeFunction<Int32 Function()>>('orpheus_n3_is_playback_complete')
+      .asFunction();
+
+  late final void Function(Pointer<OrpheusN3PlaybackDiagnostics> out)
+      n3GetDiagnostics = lib
+          .lookup<
+              NativeFunction<
+                  Void Function(Pointer<OrpheusN3PlaybackDiagnostics> out)>>(
+            'orpheus_n3_get_diagnostics',
+          )
+          .asFunction();
+
+  late final void Function() n3Shutdown = lib
+      .lookup<NativeFunction<Void Function()>>('orpheus_n3_shutdown')
+      .asFunction();
+
+  OrpheusN3PlaybackDiagnosticsData readN3Diagnostics() {
+    final ptr = calloc<OrpheusN3PlaybackDiagnostics>();
+    try {
+      n3GetDiagnostics(ptr);
+      final d = ptr.ref;
+      return OrpheusN3PlaybackDiagnosticsData(
+        sampleRate: d.sampleRate,
+        framesPerBurst: d.framesPerBurst,
+        bufferSizeInFrames: d.bufferSizeInFrames,
+        xRunCount: d.xRunCount,
+        apiUsed: d.apiUsed,
+        performanceMode: d.performanceMode,
+        sharingMode: d.sharingMode,
+        outputStreamOpened: d.outputStreamOpened,
+        wavLoadSuccess: d.wavLoadSuccess,
+        wavSampleRate: d.wavSampleRate,
+        wavChannels: d.wavChannels,
+        playbackComplete: d.playbackComplete,
+        isPlaying: d.isPlaying,
+        errorCode: d.errorCode,
+        exclusiveAttempted: d.exclusiveAttempted,
+        sharedFallbackUsed: d.sharedFallbackUsed,
+        wavTotalFrames: d.wavTotalFrames,
+        playbackStartSample: d.playbackStartSample,
+        playbackStopSample: d.playbackStopSample,
+        currentTransportSample: d.currentTransportSample,
+        outputCallbackCount: d.outputCallbackCount,
+      );
+    } finally {
+      calloc.free(ptr);
+    }
+  }
 
   OrpheusDuplexDiagnosticsData readDuplexDiagnostics() {
     final ptr = calloc<OrpheusDuplexDiagnostics>();

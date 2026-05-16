@@ -9,6 +9,7 @@ import 'orpheus_native_bindings.dart';
 import 'orpheus_native_duplex_bindings.dart';
 import 'orpheus_native_labels.dart';
 import 'orpheus_native_latency_profile.dart';
+import 'orpheus_native_n3_bindings.dart';
 
 /// Phase N1 — Oboe handshake orchestration (no main recorder integration).
 class OrpheusNativeAudio {
@@ -19,12 +20,18 @@ class OrpheusNativeAudio {
   OrpheusNativeBindings? _bindings;
   String? _lastWavPath;
   String? _lastN2WavPath;
+  String? _n3WavPath;
+  bool _n3SessionOpen = false;
 
   bool get isAndroid => Platform.isAndroid;
 
   String? get lastWavPath => _lastWavPath;
 
   String? get lastN2WavPath => _lastN2WavPath;
+
+  String? get lastN3WavPath => _n3WavPath;
+
+  bool get isN3SessionOpen => _n3SessionOpen;
 
   OrpheusNativeBindings get bindings {
     if (!isAndroid) {
@@ -179,5 +186,77 @@ class OrpheusNativeAudio {
       '${OrpheusNativeLabels.formatLatencyProfile(profile)}',
     );
     return profile;
+  }
+
+  /// Phase N3B — open session, generate/load 8 s test WAV, open Oboe output.
+  Future<String> ensureN3bSession() async {
+    if (_n3SessionOpen && _n3WavPath != null) {
+      return _n3WavPath!;
+    }
+    final b = bindings;
+    _check(b.n3Init(), b);
+
+    final dir = await getTemporaryDirectory();
+    final wavPath = '${dir.path}/orpheus_n3b_test.wav';
+    final pathPtr = wavPath.toNativeUtf8();
+    try {
+      _check(b.n3GenerateTestWav(pathPtr), b);
+    } finally {
+      malloc.free(pathPtr);
+    }
+    _check(b.n3OpenStreams(), b);
+
+    _n3WavPath = wavPath;
+    _n3SessionOpen = true;
+    debugPrint('Orpheus N3B: session ready path=$wavPath');
+    return wavPath;
+  }
+
+  OrpheusN3PlaybackDiagnosticsData readN3Diagnostics() =>
+      bindings.readN3Diagnostics();
+
+  /// Start playback from [startSample] and poll until complete or [timeout].
+  Future<OrpheusN3PlaybackDiagnosticsData> runN3bPlayback({
+    int startSample = 0,
+    Duration timeout = const Duration(seconds: 12),
+    void Function(OrpheusN3PlaybackDiagnosticsData diag)? onTransportTick,
+  }) async {
+    final b = bindings;
+    await ensureN3bSession();
+    b.n3StopPlayback();
+    _check(b.n3StartPlayback(startSample), b);
+
+    final deadline = DateTime.now().add(timeout);
+    OrpheusN3PlaybackDiagnosticsData diag = b.readN3Diagnostics();
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      diag = b.readN3Diagnostics();
+      onTransportTick?.call(diag);
+      if (b.n3IsPlaybackComplete() == 1) {
+        break;
+      }
+      if (diag.isPlaying == 0 &&
+          diag.currentTransportSample >= diag.playbackStopSample) {
+        break;
+      }
+    }
+
+    debugPrint(
+      'Orpheus N3B: playback done transport=${diag.currentTransportSample} '
+      'xruns=${diag.xRunCount} complete=${diag.playbackComplete}',
+    );
+    return diag;
+  }
+
+  Future<void> stopN3b() async {
+    if (!_n3SessionOpen) {
+      return;
+    }
+    final b = bindings;
+    b.n3StopPlayback();
+    b.n3Shutdown();
+    _n3SessionOpen = false;
+    _bindings = null;
+    debugPrint('Orpheus N3B: session stopped');
   }
 }

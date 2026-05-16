@@ -107,6 +107,33 @@ typedef struct OrpheusDuplexDiagnostics {
     int64_t perClickResidual5;
 } OrpheusDuplexDiagnostics;
 
+/** Phase N3B one-track WAV playback diagnostics — strict C struct for FFI. */
+typedef struct OrpheusN3PlaybackDiagnostics {
+    int32_t sampleRate;
+    int32_t framesPerBurst;
+    int32_t bufferSizeInFrames;
+    int32_t xRunCount;
+    int32_t apiUsed;
+    int32_t performanceMode;
+    int32_t sharingMode;
+    int32_t outputStreamOpened;
+    int32_t wavLoadSuccess;
+    int32_t wavSampleRate;
+    int32_t wavChannels;
+    int32_t playbackComplete;
+    int32_t isPlaying;
+    int32_t errorCode;
+    int32_t exclusiveAttempted;
+    int32_t sharedFallbackUsed;
+    int32_t _paddingForInt64Align;
+
+    int64_t wavTotalFrames;
+    int64_t playbackStartSample;
+    int64_t playbackStopSample;
+    int64_t currentTransportSample;
+    int64_t outputCallbackCount;
+} OrpheusN3PlaybackDiagnostics;
+
 #ifdef __cplusplus
 }
 #endif

@@ -24,6 +24,18 @@ int32_t orpheus_native_n2_is_complete(void);
 void orpheus_native_n2_get_diagnostics(OrpheusDuplexDiagnostics* out);
 void orpheus_native_n2_shutdown(void);
 
+/** Phase N3B one-track WAV playback (separate engine instance). */
+int32_t orpheus_n3_init(void);
+int32_t orpheus_n3_generate_test_wav(const char* path);
+int32_t orpheus_n3_load_wav(const char* path);
+int32_t orpheus_n3_open_streams(void);
+int32_t orpheus_n3_start_playback(int64_t start_sample);
+void orpheus_n3_stop_playback(void);
+int64_t orpheus_n3_get_transport_sample(void);
+int32_t orpheus_n3_is_playback_complete(void);
+void orpheus_n3_get_diagnostics(OrpheusN3PlaybackDiagnostics* out);
+void orpheus_n3_shutdown(void);
+
 const char* orpheus_native_last_error(void);
 
 #ifdef __cplusplus

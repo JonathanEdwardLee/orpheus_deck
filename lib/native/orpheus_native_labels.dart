@@ -1,6 +1,7 @@
 import 'orpheus_native_bindings.dart';
 import 'orpheus_native_duplex_bindings.dart';
 import 'orpheus_native_latency_profile.dart';
+import 'orpheus_native_n3_bindings.dart';
 
 /// Oboe 1.10 enum labels (see oboe/Definitions.h).
 class OrpheusNativeLabels {
@@ -277,6 +278,24 @@ class OrpheusNativeLabels {
         ? 'offset=${d.medianOffsetSamples} spread=${d.spreadSamples}'
         : (pass.rejectReason ?? 'unknown');
     return 'Run ${pass.runIndex}: $status — $detail';
+  }
+
+  static String formatN3bPlayback(OrpheusN3PlaybackDiagnosticsData d) {
+    return 'N3B ONE-TRACK PLAYBACK\n'
+        'WAV: ${d.wavSampleRate} Hz / ${d.wavChannels} ch / '
+        '${d.wavTotalFrames} frames '
+        '(${d.wavDurationSeconds.toStringAsFixed(1)} s)\n'
+        'TRANSPORT: ${d.currentTransportSample} samples '
+        '(${d.transportSeconds.toStringAsFixed(2)} s)\n'
+        'RANGE: ${d.playbackStartSample} … ${d.playbackStopSample}\n'
+        'PLAYING: ${d.isPlaying == 1 ? 'YES' : 'NO'}\n'
+        'COMPLETE: ${d.playbackComplete == 1 ? 'YES' : 'NO'}\n'
+        'XRUNS: ${d.xRunCount}\n'
+        'API: ${apiUsed(d.apiUsed)} | '
+        '${performanceMode(d.performanceMode)} | '
+        '${sharingMode(d.sharingMode)}\n'
+        'BURST / BUFFER: ${d.framesPerBurst} / ${d.bufferSizeInFrames}\n'
+        'OUTPUT CALLBACKS: ${d.outputCallbackCount}';
   }
 
   static String copyRecommendedOffsetLine(OrpheusLatencyProfileResult p) {
