@@ -21,7 +21,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show compute, kDebugMode;
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:record/record.dart';
@@ -36,6 +36,8 @@ import 'package:share_plus/share_plus.dart';
 import 'package:audio_session/audio_session.dart' as as_sess;
 
 import 'widgets/tape_reel_transport.dart';
+
+import 'orpheus_latency_calibration.dart';
 
 /// One cassette side — fixed transport length (0 … tapeLengthMs).
 /// Clip lengths do not shorten the tape; matches ORPHEUS_DESIGN_MANIFESTO.md.
@@ -126,28 +128,8 @@ void showOrpheusOledToast(BuildContext context, String message) {
 
 /// App-level preferences at Documents/OrpheusDeck/settings.json (not per session).
 ///
-/// -----------------------------------------------------------------------------
-/// AUTO CALIBRATION (future design — NOT implemented Phase D2)
-/// -----------------------------------------------------------------------------
-/// One-shot flow the user triggers from Settings/Tools later:
-/// 1. Temporarily mute track exports; arm a disposable take or silent track.
-/// 2. Route the CLICK bus (already a timeline WAV aligned to BPM) through
-///    the output device — prefer wired headphones/speaker path user records with.
-/// 3. Record 1–2 seconds of MIC input while emitting a sparse click pulse train
-///    (existing click hit or louder diagnostic pulse).
-/// 4. On the freshly recorded clip, scan samples for first transient rise above
-///    noise floor; compare predicted timeline position of that click vs onset in
-///    the recording computed from WAV sample index + known sampleRate.
-/// 5. Estimated round-trip = (detected − expected) − [optional] known output
-///    buffer constant; optionally split into output vs input halves for UI.
-/// 6. Present suggested [manualLatencyAdjustMs] delta; optionally auto-fill —
-///    must never overwrite tapeStartMs/session clips.
-///
-/// Bluetooth adds ~80–220+ ms jitter vs wired; wired is far more repeatable.
-/// Calibration should tag "audio route" fingerprint (speaker vs BT A2DP) once
-/// the platform exposes a stable descriptor; otherwise Bluetooth users rely on
-/// manual trim rather than brittle auto-values.
-/// -----------------------------------------------------------------------------
+/// Latency test: plays a disposable click WAV, records briefly to temp files,
+/// and writes [manualLatencyAdjustMs]; see [OrpheusLatencyCalibration].
 class OrpheusSettings {
   OrpheusSettings._();
   static final OrpheusSettings instance = OrpheusSettings._();
@@ -155,16 +137,24 @@ class OrpheusSettings {
   static const int manualLatencyAdjustMinMs = -2000;
   static const int manualLatencyAdjustMaxMs = 2000;
 
-  bool latencyCompensationEnabled = true;
+  /// Must run Settings ▸ LATENCY TEST before compensation can stay ON across
+  /// launches. Stored in settings.json.
+  bool latencyCalibrated = false;
+
+  /// Subtracted from decoded file seek when ON; aligns export adelay similarly.
+  /// Does **not** change stored [trackTapeStartMs].
+  bool latencyCompensationEnabled = false;
 
   /// When true, show the pre-record informational checklist dialog.
   bool recordingCheckReminderEnabled = true;
 
   /// Subtracted from decoded file position during PLAY/REC monitoring/export
-  /// adelay baseline; **positive** pushes perceived audio slightly earlier vs the
-  /// tape timeline (helps when overdubs feel late). Does **not** change stored
-  /// [trackTapeStartMs] metadata.
+  /// **when [latencyCompensationEnabled] is true**;
+  /// **positive** pulls perceived playback earlier vs the tape timeline.
   int manualLatencyAdjustMs = 0;
+
+  /// Last successful LATENCY TEST (epoch millis); diagnostic / future routing UI.
+  int lastLatencyTestMs = 0;
 
   Future<File> _settingsFile() async {
     final dir = await getApplicationDocumentsDirectory();
@@ -184,10 +174,9 @@ class OrpheusSettings {
       }
       final dynamic raw = jsonDecode(await file.readAsString());
       if (raw is Map<String, dynamic>) {
-        final dynamic latRaw = raw['latencyCompensationEnabled'];
-        // Only a JSON boolean `false` turns compensation off; missing or legacy
-        // wrong-typed values default to ON for new-ish installs.
-        latencyCompensationEnabled = latRaw is bool ? latRaw : true;
+        latencyCalibrated = raw['latencyCalibrated'] is bool
+            ? raw['latencyCalibrated'] as bool
+            : false;
 
         final dynamic manRaw = raw['manualLatencyAdjustMs'];
         if (manRaw is num) {
@@ -198,19 +187,38 @@ class OrpheusSettings {
           manualLatencyAdjustMs = 0;
         }
 
+        final lt = raw['lastLatencyTestMs'];
+        if (lt is num) {
+          lastLatencyTestMs = lt.toInt();
+        } else {
+          lastLatencyTestMs = 0;
+        }
+
+        final dynamic latRaw = raw['latencyCompensationEnabled'];
+
         final dynamic recRemRaw = raw['recordingCheckReminderEnabled'];
         recordingCheckReminderEnabled =
             recRemRaw is bool ? recRemRaw : true;
+
+        if (!latencyCalibrated) {
+          latencyCompensationEnabled = false;
+        } else {
+          latencyCompensationEnabled = latRaw is bool ? latRaw : true;
+        }
       } else {
-        latencyCompensationEnabled = true;
+        latencyCalibrated = false;
+        latencyCompensationEnabled = false;
         manualLatencyAdjustMs = 0;
         recordingCheckReminderEnabled = true;
+        lastLatencyTestMs = 0;
       }
     } catch (e, st) {
       debugPrint('Orpheus Deck: settings load error $e\n$st');
-      latencyCompensationEnabled = true;
+      latencyCalibrated = false;
+      latencyCompensationEnabled = false;
       manualLatencyAdjustMs = 0;
       recordingCheckReminderEnabled = true;
+      lastLatencyTestMs = 0;
     }
   }
 
@@ -218,19 +226,41 @@ class OrpheusSettings {
     final file = await _settingsFile();
     await file.writeAsString(
       jsonEncode(<String, dynamic>{
+        'latencyCalibrated': latencyCalibrated,
         'latencyCompensationEnabled': latencyCompensationEnabled,
         'manualLatencyAdjustMs': manualLatencyAdjustMs,
         'recordingCheckReminderEnabled': recordingCheckReminderEnabled,
+        'lastLatencyTestMs': lastLatencyTestMs,
       }),
       flush: true,
     );
   }
 
   Future<void> setLatencyCompensation(bool enabled) async {
+    if (enabled && !latencyCalibrated) {
+      debugPrint(
+        'Orpheus Deck: latency compensation ON ignored until calibrated',
+      );
+      return;
+    }
     latencyCompensationEnabled = enabled;
     await save();
     debugPrint(
       'Orpheus Deck: settings latencyCompensationEnabled=$enabled',
+    );
+  }
+
+  Future<void> applySuccessfulLatencyCalibration(int medianRoundTripMs) async {
+    manualLatencyAdjustMs = medianRoundTripMs.clamp(
+      manualLatencyAdjustMinMs,
+      manualLatencyAdjustMaxMs,
+    );
+    latencyCalibrated = true;
+    latencyCompensationEnabled = true;
+    lastLatencyTestMs = DateTime.now().millisecondsSinceEpoch;
+    await save();
+    debugPrint(
+      'Orpheus Deck: latency calibrated medianMs=$manualLatencyAdjustMs',
     );
   }
 
@@ -258,19 +288,26 @@ class OrpheusSettings {
 }
 
 /// Shared settings UI (home menu + recording reminder “OPEN SETTINGS”).
-void showOrpheusDeckSettingsDialog(BuildContext outerContext) {
-  // TODO(phase-D2-latency): Auto LATENCY TEST — output click, mic capture,
-  // transient detection, round-trip estimate → suggest [manualLatencyAdjustMs].
+void showOrpheusDeckSettingsDialog(
+  BuildContext outerContext, {
+  bool Function()? isTransportBusy,
+}) {
   showDialog(
     context: outerContext,
     builder: (dialogContext) {
+      var latencyCalibBusy = false;
+
       return StatefulBuilder(
         builder: (context, setDialogState) {
+          final bool calibrated =
+              OrpheusSettings.instance.latencyCalibrated;
           final latencyOn =
               OrpheusSettings.instance.latencyCompensationEnabled;
           final int manualAdj = OrpheusSettings.instance.manualLatencyAdjustMs;
           final bool recReminderOn =
               OrpheusSettings.instance.recordingCheckReminderEnabled;
+
+          bool transportBusy() => isTransportBusy?.call() ?? false;
 
           Widget stepBtn(String t, Future<void> Function() act) {
             return TextButton(
@@ -289,6 +326,92 @@ void showOrpheusDeckSettingsDialog(BuildContext outerContext) {
                       fontFamily: 'monospace',
                       fontSize: 10,
                       fontWeight: FontWeight.bold)),
+            );
+          }
+
+          void openLatencyInstructions() {
+            if (transportBusy()) {
+              showOrpheusOledToast(outerContext, 'STOP PLAY/REC FIRST');
+              return;
+            }
+            showDialog<void>(
+              context: dialogContext,
+              builder: (prepCtx) {
+                return AlertDialog(
+                  backgroundColor: Colors.black,
+                  shape: Border.all(color: Colors.white, width: 2),
+                  title: const Text(
+                    'LATENCY TEST',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  content: const SingleChildScrollView(
+                    child: Text(
+                      'FOR BEST RESULTS:\n'
+                      'USE WIRED HEADPHONES OR PHONE SPEAKER.\n'
+                      'BLUETOOTH MAY BE LATE OR UNSTABLE.\n'
+                      'KEEP THE PHONE QUIET.\n'
+                      'THE APP WILL PLAY CLICKS AND LISTEN FOR THEM.',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontFamily: 'monospace',
+                        fontSize: 10,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(prepCtx),
+                      child: const Text(
+                        'CANCEL',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        Navigator.pop(prepCtx);
+                        if (transportBusy()) {
+                          showOrpheusOledToast(
+                              outerContext, 'STOP PLAY/REC FIRST');
+                          return;
+                        }
+                        () async {
+                          setDialogState(() => latencyCalibBusy = true);
+                          final r =
+                              await OrpheusLatencyCalibration.runCalibration();
+                          if (r.ok) {
+                            await OrpheusSettings.instance
+                                .applySuccessfulLatencyCalibration(
+                                    r.medianMs);
+                          }
+                          setDialogState(() => latencyCalibBusy = false);
+                          if (outerContext.mounted) {
+                            showOrpheusOledToast(outerContext, r.userMessage);
+                          }
+                          setDialogState(() {});
+                        }();
+                      },
+                      child: const Text(
+                        'START TEST',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
             );
           }
 
@@ -359,6 +482,51 @@ void showOrpheusDeckSettingsDialog(BuildContext outerContext) {
                     ),
                   ),
                   const SizedBox(height: 16),
+                  const Text(
+                    'LATENCY TEST',
+                    style: TextStyle(
+                      color: Colors.white54,
+                      fontFamily: 'monospace',
+                      fontSize: 10,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed:
+                          latencyCalibBusy ? null : openLatencyInstructions,
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                      ),
+                      child: Text(
+                        latencyCalibBusy
+                            ? 'RUNNING…'
+                            : 'RUN LATENCY TEST',
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.bold,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'RUN AGAIN IF YOU CHANGE HEADPHONES.',
+                    style: TextStyle(
+                      color: Colors.white38,
+                      fontFamily: 'monospace',
+                      fontSize: 9,
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                   Row(
                     children: [
                       const Expanded(
@@ -373,24 +541,28 @@ void showOrpheusDeckSettingsDialog(BuildContext outerContext) {
                         ),
                       ),
                       Switch(
-                        value: latencyOn,
+                        value: calibrated && latencyOn,
                         activeThumbColor: Colors.black,
                         activeTrackColor: Colors.white,
                         inactiveThumbColor: Colors.white54,
                         inactiveTrackColor: Colors.white24,
-                        onChanged: (v) async {
-                          await OrpheusSettings.instance
-                              .setLatencyCompensation(v);
-                          setDialogState(() {});
-                        },
+                        onChanged: calibrated
+                            ? (v) async {
+                                await OrpheusSettings.instance
+                                    .setLatencyCompensation(v);
+                                setDialogState(() {});
+                              }
+                            : null,
                       ),
                     ],
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    latencyOn
-                        ? 'ON: keeps overdubs tighter.'
-                        : 'OFF: natural delay effect.',
+                    !calibrated
+                        ? 'RUN TEST FIRST.'
+                        : (latencyOn
+                            ? 'ON: keeps overdubs tighter.'
+                            : 'OFF: natural delay effect.'),
                     style: const TextStyle(
                       color: Colors.white38,
                       fontFamily: 'monospace',
@@ -409,18 +581,23 @@ void showOrpheusDeckSettingsDialog(BuildContext outerContext) {
                     ),
                   ),
                   const SizedBox(height: 4),
-                  const Text(
-                    'Use if overdubs sound late or early.',
-                    style: TextStyle(
-                      color: Colors.white38,
+                  Text(
+                    'LATENCY: $manualAdj MS',
+                    style: const TextStyle(
+                      color: Colors.white70,
                       fontFamily: 'monospace',
-                      fontSize: 9,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
                       height: 1.35,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '$manualAdj ms  •  PLAY / monitor / EXPORT  •  tape positions unchanged',
+                    latencyOn
+                        ? 'Fine-tune if overdubs sound late or early. '
+                            'PLAY / monitor / EXPORT. Tape positions unchanged.'
+                        : 'When compensation is OFF, recording keeps natural delay '
+                            '(value kept for next time compensation is ON).',
                     style: const TextStyle(
                       color: Colors.white38,
                       fontFamily: 'monospace',
@@ -451,51 +628,6 @@ void showOrpheusDeckSettingsDialog(BuildContext outerContext) {
                           () => OrpheusSettings.instance
                               .bumpManualLatencyAdjustMs(10)),
                     ],
-                  ),
-                  const SizedBox(height: 20),
-                  const Text(
-                    'LATENCY TEST (COMING SOON)',
-                    style: TextStyle(
-                      color: Colors.white54,
-                      fontFamily: 'monospace',
-                      fontSize: 10,
-                      letterSpacing: 1,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    'Will play a click, record it, detect the transient, and suggest a latency value.',
-                    style: TextStyle(
-                      color: Colors.white38,
-                      fontFamily: 'monospace',
-                      fontSize: 9,
-                      height: 1.35,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton(
-                      onPressed: () {
-                        showOrpheusOledToast(
-                            outerContext, 'LATENCY TEST: COMING SOON');
-                      },
-                      style: TextButton.styleFrom(
-                        foregroundColor: Colors.white70,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                      ),
-                      child: const Text(
-                        'COMING SOON',
-                        style: TextStyle(
-                          fontFamily: 'monospace',
-                          fontWeight: FontWeight.bold,
-                          fontSize: 10,
-                        ),
-                      ),
-                    ),
                   ),
                   const SizedBox(height: 12),
                   const Text(
@@ -545,7 +677,9 @@ void showOrpheusDeckSettingsDialog(BuildContext outerContext) {
             ),
             actions: [
               TextButton(
-                onPressed: () => Navigator.pop(dialogContext),
+                onPressed: latencyCalibBusy
+                    ? null
+                    : () => Navigator.pop(dialogContext),
                 child: const Text(
                   'CLOSE',
                   style: TextStyle(
@@ -1033,8 +1167,8 @@ class _JunkfeathersGlitchSplashState extends State<JunkfeathersGlitchSplash>
               ),
               Center(
                 child: SizedBox(
-                  width: 280,
-                  height: 140,
+                  width: 236,
+                  height: 118,
                   child: CustomPaint(
                     painter: JunkfeathersLogoMarkPainter(t),
                   ),
@@ -1151,7 +1285,7 @@ class JunkfeathersSplashBackdropPainter extends CustomPainter {
       old.progress != progress;
 }
 
-/// Logo wordmark + solid dead-bird marks (shares phase timing with backdrop).
+/// Logo wordmark + outline dead birds (full-screen glitch lives in backdrop only).
 class JunkfeathersLogoMarkPainter extends CustomPainter {
   JunkfeathersLogoMarkPainter(this.progress);
 
@@ -1199,12 +1333,12 @@ class JunkfeathersLogoMarkPainter extends CustomPainter {
       }
     }
 
-    const int textSize = 2;
-    _drawText(canvas, 'JUNKFEATHERS', 4, textSize, master);
-    _drawText(canvas, 'TECH', 22, textSize, master);
+    const double wordPx = 12.0;
+    _drawWordmarkGlitch(canvas, 'JUNKFEATHERS', 7, master, wordPx, globalStep ^ 31);
+    _drawWordmarkGlitch(canvas, 'TECH', 22, master, wordPx, globalStep ^ 997);
 
-    _drawBirdSolid(canvas, 32, 46, 12, master);
-    _drawBirdSolid(canvas, 96, 46, 12, master);
+    _drawBirdOutlined(canvas, 32, 45, 10.8, master);
+    _drawBirdOutlined(canvas, 96, 45, 10.8, master);
 
     // Final phase: slice the mark itself (backdrop already carries interference).
     if (phase == 3) {
@@ -1224,75 +1358,130 @@ class JunkfeathersLogoMarkPainter extends CustomPainter {
     canvas.translate(-jitterX, -jitterY);
   }
 
-  void _drawText(
-      Canvas canvas, String text, double y, int size, double opacity) {
+  void _drawWordmarkGlitch(
+    Canvas canvas,
+    String text,
+    double y,
+    double m,
+    double fontPx,
+    int lineSalt,
+  ) {
+    final double shimmer =
+        sin(progress * pi * 2.6 + y * 0.08).clamp(-1.0, 1.0) * 0.045;
+    final double textAlpha = (m * (0.72 + shimmer)).clamp(0.12, 1.0);
+
     final textPainter = TextPainter(
       text: TextSpan(
         text: text,
         style: TextStyle(
-          color: Colors.white.withValues(alpha: opacity),
+          color: Colors.white.withValues(alpha: textAlpha),
           fontFamily: 'monospace',
-          fontSize: size * 8.0,
-          fontWeight: FontWeight.w900,
-          height: 1.0,
+          fontSize: fontPx,
+          fontWeight: FontWeight.bold,
+          height: 1.05,
+          letterSpacing: 0.3,
         ),
       ),
       textDirection: TextDirection.ltr,
     );
-    textPainter.layout();
-    final double x = (128 - textPainter.width) / 2;
+    textPainter.layout(maxWidth: 124);
+    final double x = (128 - textPainter.width) * 0.5;
     textPainter.paint(canvas, Offset(x, y));
+
+    final double w = textPainter.width;
+    final double h = textPainter.height;
+    final Random sliceR = Random(
+      lineSalt ^
+          ((progress * 100000).floor()) ^
+          text.hashCode ^
+          0x9e3779b9,
+    );
+
+    double gy = y;
+    final double bottom = y + h;
+    while (gy < bottom) {
+      if (sliceR.nextInt(100) < 48) {
+        final double gap = 0.85 + sliceR.nextDouble() * 0.55;
+        canvas.drawRect(
+          Rect.fromLTRB(x - 1, gy, x + w + 1, gy + gap),
+          Paint()
+            ..color = Colors.black
+                .withValues(alpha: m * (0.38 + sliceR.nextDouble() * 0.28)),
+        );
+      }
+      if (sliceR.nextInt(100) < 12) {
+        canvas.drawRect(
+          Rect.fromLTRB(x + sliceR.nextDouble() * w * 0.08, gy, x + w, gy + 0.85),
+          Paint()
+            ..color = Colors.black
+                .withValues(alpha: m * (0.18 + sliceR.nextDouble() * 0.12)),
+        );
+      }
+      if (sliceR.nextInt(100) < 8) {
+        canvas.drawRect(
+          Rect.fromLTWH(x - 1, gy, w + 2, 0.65),
+          Paint()
+            ..color =
+                Colors.white.withValues(alpha: m * (0.1 + sliceR.nextDouble() * 0.08)),
+        );
+      }
+      gy += 2.0 + sliceR.nextDouble() * 2.4;
+    }
   }
 
-  void _drawBirdSolid(Canvas canvas, double cx, double cy, double r, double m) {
-    final fill = Paint()
-      ..color = Colors.white.withValues(alpha: m)
+  void _drawBirdOutlined(
+      Canvas canvas, double cx, double cy, double r, double m) {
+    final Paint interior = Paint()
+      ..color = Colors.black.withValues(alpha: m)
       ..style = PaintingStyle.fill;
 
-    final ring = Paint()
-      ..color = Colors.black.withValues(alpha: m)
+    final Paint ring = Paint()
+      ..color = Colors.white.withValues(alpha: m * 0.9)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2;
+      ..strokeWidth = 1.25;
 
-    final eye = Paint()
-      ..color = Colors.black.withValues(alpha: m)
-      ..strokeWidth = 1.6
+    final Paint eyeStroke = Paint()
+      ..color = Colors.white.withValues(alpha: m * 0.88)
+      ..strokeWidth = 1.45
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
 
-    canvas.drawCircle(Offset(cx, cy), r, fill);
+    canvas.drawCircle(Offset(cx, cy), r, interior);
     canvas.drawCircle(Offset(cx, cy), r, ring);
 
     final double exL = cx - (r / 2);
     final double exR = cx + (r / 2);
-    final double ey = cy - (r / 4);
-    const double s = 2.2;
+    final double eyeY = cy - (r / 4);
+    const double s = 2.0;
 
     canvas.drawLine(
-        Offset(exL - s, ey - s), Offset(exL + s, ey + s), eye);
+        Offset(exL - s, eyeY - s), Offset(exL + s, eyeY + s), eyeStroke);
     canvas.drawLine(
-        Offset(exL - s, ey + s), Offset(exL + s, ey - s), eye);
+        Offset(exL - s, eyeY + s), Offset(exL + s, eyeY - s), eyeStroke);
     canvas.drawLine(
-        Offset(exR - s, ey - s), Offset(exR + s, ey + s), eye);
+        Offset(exR - s, eyeY - s), Offset(exR + s, eyeY + s), eyeStroke);
     canvas.drawLine(
-        Offset(exR - s, ey + s), Offset(exR + s, ey - s), eye);
+        Offset(exR - s, eyeY + s), Offset(exR + s, eyeY - s), eyeStroke);
 
     final double bx = cx;
     final double by = cy + (r / 3);
 
     final Path beak = Path()
-      ..moveTo(bx, by + 3)
-      ..lineTo(bx - 4, by - 2)
-      ..lineTo(bx + 4, by - 2)
+      ..moveTo(bx, by + 2.8)
+      ..lineTo(bx - 3.8, by - 1.8)
+      ..lineTo(bx + 3.8, by - 1.8)
       ..close();
 
-    canvas.drawPath(beak, fill);
+    final Paint beakFill = Paint()
+      ..color = Colors.white.withValues(alpha: m * 0.82)
+      ..style = PaintingStyle.fill;
+    canvas.drawPath(beak, beakFill);
     canvas.drawPath(
       beak,
       Paint()
-        ..color = Colors.black.withValues(alpha: m)
+        ..color = Colors.white.withValues(alpha: m * 0.5)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.0,
+        ..strokeWidth = 0.85,
     );
   }
 
@@ -1991,15 +2180,21 @@ class _RecorderScreenState extends State<RecorderScreen> {
     return maxMs;
   }
 
-  /// FFmpeg adelay baseline: shifts audio earlier on the exported timeline when
-  /// [manualLatencyAdjustMs] is positive (matches [_playbackSeekMsForTrack]).
+  /// FFmpeg `adelay` baseline when latency compensation applies: aligns export
+  /// timeline with PLAY/monitor trimming (matches [_playbackSeekMsForTrack]).
   int _exportAdelayMsFromTapeStart(int tapeStartMs) {
+    if (!OrpheusSettings.instance.latencyCompensationEnabled) {
+      return tapeStartMs.clamp(0, tapeLengthMs);
+    }
     final m = OrpheusSettings.instance.manualLatencyAdjustMs;
     return (tapeStartMs - m).clamp(0, tapeLengthMs);
   }
 
-  /// Waveform lane horizontal offset only; session [trackTapeStartMs] unchanged.
+  /// Waveform lane horizontal offset only; unchanged when compensation is OFF.
   int _waveformLaneTapeStartMs(int storedTapeStartMs) {
+    if (!OrpheusSettings.instance.latencyCompensationEnabled) {
+      return storedTapeStartMs.clamp(0, tapeLengthMs);
+    }
     final m = OrpheusSettings.instance.manualLatencyAdjustMs;
     return (storedTapeStartMs - m).clamp(0, tapeLengthMs);
   }
@@ -2014,7 +2209,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
   /// File seek for track [trackIndex] when tape head is at [tapeHeadMs].
   /// Applies optional per-take launch measurement ([_trackOffsets]) when latency
   /// compensation is ON, then global [OrpheusSettings.manualLatencyAdjustMs]
-  /// (export uses the same trim via [_exportAdelayMsFromTapeStart]).
+  /// (only while compensation is ON; export uses the same rule via
+  /// [_exportAdelayMsFromTapeStart]).
   int _playbackSeekMsForTrack(
     int trackIndex,
     int tapeHeadMs,
@@ -2027,7 +2223,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
       final int off = _trackOffsets[trackIndex];
       if (off > 0) local = max(0, local - off);
     }
-    final int manual = OrpheusSettings.instance.manualLatencyAdjustMs;
+    final int manual = OrpheusSettings.instance.latencyCompensationEnabled
+        ? OrpheusSettings.instance.manualLatencyAdjustMs
+        : 0;
     local = max(0, local - manual);
     return min(local, cap);
   }
@@ -3015,6 +3213,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
   /// Diagnostic: synthetic 440/660/880 Hz tones at tape 0s / 5s / 10s using the
   /// same adelay → amix → optional loudnorm mapping as [_exportMix].
   /// Publishes Music/Orpheus Deck/export_alignment_test.wav
+  /// Not shown in PROJECT MGMT (beta UI); method kept for tooling / future gates.
+  // ignore: unused_element
   Future<void> _testExportAlignment({bool masterMix = false}) async {
     if (_isRecording || _isPlaying) _stop();
     if (_isExporting) {
@@ -3769,13 +3969,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
                     Navigator.pop(context);
                     _exportMix(true);
                   }),
-                  if (kDebugMode) ...[
-                    const SizedBox(height: 8),
-                    _menuButton("TEST_EXPORT_ALIGNMENT", () {
-                      Navigator.pop(context);
-                      _testExportAlignment(masterMix: false);
-                    }),
-                  ],
                   const SizedBox(height: 16),
                   Container(height: 1, color: Colors.white24),
                   const SizedBox(height: 16),
@@ -4286,7 +4479,11 @@ class _RecorderScreenState extends State<RecorderScreen> {
                   child: TextButton(
                     onPressed: () {
                       Navigator.pop(dialogContext);
-                      showOrpheusDeckSettingsDialog(context);
+                      showOrpheusDeckSettingsDialog(
+                        context,
+                        isTransportBusy: () =>
+                            _isRecording || _isPlaying || _isExporting,
+                      );
                     },
                     style: TextButton.styleFrom(
                       foregroundColor: Colors.white,
