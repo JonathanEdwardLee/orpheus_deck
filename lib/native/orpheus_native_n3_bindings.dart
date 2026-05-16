@@ -53,10 +53,29 @@ class OrpheusN3PlaybackDiagnosticsData {
 
   double get wavDurationSeconds =>
       wavSampleRate > 0 ? wavTotalFrames / wavSampleRate : 0;
+
+  /// False when FFI layout is wrong or fields were not filled (see @Packed(8)).
+  bool get diagnosticsPlausible {
+    if (wavLoadSuccess != 1) {
+      return wavTotalFrames == 0 && outputCallbackCount == 0;
+    }
+    if (wavTotalFrames <= 0 || wavTotalFrames > 50000000) {
+      return false;
+    }
+    if (outputCallbackCount < 0 || outputCallbackCount > 50000000) {
+      return false;
+    }
+    if (currentTransportSample < 0 ||
+        currentTransportSample > wavTotalFrames + sampleRate) {
+      return false;
+    }
+    return true;
+  }
 }
 
 /// Must match OrpheusN3PlaybackDiagnostics in audio_types.h.
-@Packed(4)
+/// Use @Packed(8) so int64 fields align like default C++ layout (not Packed(4)).
+@Packed(8)
 final class OrpheusN3PlaybackDiagnostics extends Struct {
   @Int32()
   external int sampleRate;

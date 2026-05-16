@@ -107,7 +107,10 @@ typedef struct OrpheusDuplexDiagnostics {
     int64_t perClickResidual5;
 } OrpheusDuplexDiagnostics;
 
-/** Phase N3B one-track WAV playback diagnostics — strict C struct for FFI. */
+/**
+ * Phase N3B one-track WAV playback diagnostics — strict C struct for FFI.
+ * Dart mirror MUST use @Packed(8) (int64_t aligns to 8 after int32 block).
+ */
 typedef struct OrpheusN3PlaybackDiagnostics {
     int32_t sampleRate;
     int32_t framesPerBurst;
@@ -136,6 +139,8 @@ typedef struct OrpheusN3PlaybackDiagnostics {
 
 #ifdef __cplusplus
 }
+static_assert(sizeof(OrpheusN3PlaybackDiagnostics) == 112,
+              "OrpheusN3PlaybackDiagnostics size must match Dart @Packed(8)");
 #endif
 
 #endif  // ORPHEUS_AUDIO_TYPES_H_

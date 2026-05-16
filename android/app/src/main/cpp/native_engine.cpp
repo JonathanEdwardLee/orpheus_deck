@@ -279,7 +279,11 @@ int32_t orpheus_n3_is_playback_complete(void) {
 }
 
 void orpheus_n3_get_diagnostics(OrpheusN3PlaybackDiagnostics* out) {
-    if (gPlaybackEngine && out != nullptr) {
+    if (out == nullptr) {
+        return;
+    }
+    *out = OrpheusN3PlaybackDiagnostics{};
+    if (gPlaybackEngine) {
         gPlaybackEngine->fillDiagnostics(out);
     }
 }

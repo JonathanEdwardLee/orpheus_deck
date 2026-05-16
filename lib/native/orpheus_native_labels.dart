@@ -281,6 +281,13 @@ class OrpheusNativeLabels {
   }
 
   static String formatN3bPlayback(OrpheusN3PlaybackDiagnosticsData d) {
+    if (!d.diagnosticsPlausible) {
+      return 'N3B ONE-TRACK PLAYBACK\n'
+          'N3B DIAGNOSTICS INVALID\n'
+          '(FFI struct mismatch or uninitialized — check @Packed(8) / C layout)\n'
+          'RAW: wavFrames=${d.wavTotalFrames} transport=${d.currentTransportSample} '
+          'callbacks=${d.outputCallbackCount}';
+    }
     return 'N3B ONE-TRACK PLAYBACK\n'
         'WAV: ${d.wavSampleRate} Hz / ${d.wavChannels} ch / '
         '${d.wavTotalFrames} frames '

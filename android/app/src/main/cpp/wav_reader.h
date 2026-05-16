@@ -14,6 +14,7 @@ struct WavLoadResult {
     int32_t sampleRate = 0;
     int32_t channels = 0;
     int64_t frameCount = 0;
+    uint32_t dataBytes = 0;
     std::vector<float> samples;
 };
 

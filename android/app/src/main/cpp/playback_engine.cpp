@@ -4,6 +4,7 @@
 #include <android/log.h>
 #include <algorithm>
 #include <cstring>
+#include <string>
 
 #include "wav_reader.h"
 #include "wav_test_tone.h"
@@ -13,6 +14,14 @@
 #define ORPHEUS_LOGI(...) __android_log_print(ANDROID_LOG_INFO, ORPHEUS_LOG_TAG, __VA_ARGS__)
 
 namespace orpheus {
+
+namespace {
+
+constexpr int64_t kN3bTestWavFrames = 48000LL * 8LL;
+constexpr uint32_t kN3bTestPcm16DataBytes =
+    static_cast<uint32_t>(kN3bTestWavFrames * 2u);
+
+}  // namespace
 
 namespace {
 
@@ -98,10 +107,33 @@ bool PlaybackEngine::loadWav(const std::string& path) {
     errorCode_.store(0, std::memory_order_relaxed);
 
     ORPHEUS_LOGI(
-        "N3B WAV loaded: %s frames=%lld rate=%d",
-        path.c_str(),
+        "N3B WAV loaded: sampleRate=%d channels=%d totalFrames=%lld "
+        "dataBytes=%u path=%s",
+        loaded.sampleRate,
+        loaded.channels,
         static_cast<long long>(loaded.frameCount),
-        loaded.sampleRate);
+        loaded.dataBytes,
+        path.c_str());
+
+    if (loaded.sampleRate == kN3PreferredSampleRate &&
+        loaded.channels == 1 &&
+        loaded.frameCount == kN3bTestWavFrames &&
+        loaded.dataBytes == kN3bTestPcm16DataBytes) {
+        ORPHEUS_LOGI(
+            "N3B test WAV sanity OK: 8.0 s @ 48 kHz mono PCM16 (~%u file bytes "
+            "with header)",
+            loaded.dataBytes + 44u);
+    } else if (path.find("orpheus_n3b_test") != std::string::npos) {
+        ORPHEUS_LOGE(
+            "N3B test WAV sanity FAIL: expected rate=%d ch=1 frames=%lld "
+            "dataBytes=%u got rate=%d frames=%lld dataBytes=%u",
+            kN3PreferredSampleRate,
+            static_cast<long long>(kN3bTestWavFrames),
+            kN3bTestPcm16DataBytes,
+            loaded.sampleRate,
+            static_cast<long long>(loaded.frameCount),
+            loaded.dataBytes);
+    }
     return true;
 }
 
@@ -204,6 +236,7 @@ bool PlaybackEngine::startPlayback(const int64_t startSample) {
     playbackStopSample_.store(total, std::memory_order_relaxed);
     currentTransportSample_.store(clampedStart, std::memory_order_relaxed);
     playbackComplete_.store(0, std::memory_order_relaxed);
+    playbackCompleteLogged_.store(0, std::memory_order_relaxed);
     isPlaying_.store(1, std::memory_order_release);
 
     ORPHEUS_LOGI(
@@ -244,6 +277,18 @@ void PlaybackEngine::handleOutputFrames(float* data, const int32_t numFrames) {
             if (playing) {
                 isPlaying_.store(0, std::memory_order_release);
                 playbackComplete_.store(1, std::memory_order_release);
+                if (playbackCompleteLogged_.exchange(1, std::memory_order_acq_rel) ==
+                    0) {
+                    ORPHEUS_LOGI(
+                        "N3B complete: startSample=%lld stopSample=%lld "
+                        "currentTransportSample=%lld outputCallbackCount=%lld",
+                        static_cast<long long>(playbackStartSample_.load(
+                            std::memory_order_relaxed)),
+                        static_cast<long long>(stop),
+                        static_cast<long long>(pos),
+                        static_cast<long long>(outputCallbackCount_.load(
+                            std::memory_order_relaxed)));
+                }
             }
         }
     }
@@ -263,7 +308,7 @@ void PlaybackEngine::fillDiagnostics(OrpheusN3PlaybackDiagnostics* out) const {
     if (out == nullptr) {
         return;
     }
-    std::memset(out, 0, sizeof(OrpheusN3PlaybackDiagnostics));
+    *out = OrpheusN3PlaybackDiagnostics{};
 
     out->sampleRate = sampleRate_.load(std::memory_order_relaxed);
     out->wavLoadSuccess = wavLoadSuccess_.load(std::memory_order_relaxed);
@@ -303,6 +348,7 @@ void PlaybackEngine::shutdown() {
     wavTotalFrames_.store(0, std::memory_order_relaxed);
     currentTransportSample_.store(0, std::memory_order_relaxed);
     outputCallbackCount_.store(0, std::memory_order_relaxed);
+    playbackCompleteLogged_.store(0, std::memory_order_relaxed);
 }
 
 }  // namespace orpheus

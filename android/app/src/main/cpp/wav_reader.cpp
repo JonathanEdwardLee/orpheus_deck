@@ -159,6 +159,7 @@ WavLoadResult loadMonoWav(const std::string& path, const int32_t requiredSampleR
     result.sampleRate = static_cast<int32_t>(sampleRate);
     result.channels = 1;
     result.frameCount = static_cast<int64_t>(frameCount);
+    result.dataBytes = dataBytes;
     return result;
 }
 

@@ -80,6 +80,7 @@ private:
     std::atomic<int64_t> playbackStopSample_{0};
     std::atomic<int64_t> currentTransportSample_{0};
     std::atomic<int64_t> outputCallbackCount_{0};
+    std::atomic<int32_t> playbackCompleteLogged_{0};
 };
 
 }  // namespace orpheus
