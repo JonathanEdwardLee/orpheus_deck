@@ -240,7 +240,7 @@ Native engine owns four-track playback, one mic record input, click guide, sampl
 | **N3B** | One-track WAV playback + transport (dev only) |
 | **N3C** | One-track playback + mic overdub to WAV |
 | **N3D** | Four-track WAV mixer test |
-| **N3E** | Hidden native recorder mode → real UI (parallel to legacy) |
+| **N3E** | Hidden native recorder mode → real UI (parallel to legacy) — plan: [N3E_INTEGRATION_PLAN.md](N3E_INTEGRATION_PLAN.md) |
 | **N3F** | Session metadata + M4A→WAV migration helper |
 
 **Next implementation:** N3B (do not replace main recorder until N3E checklist passes).

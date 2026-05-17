@@ -244,7 +244,7 @@ Do **not** delete M4A or change export until N4 proves sample-aligned export fro
 | **N3B** | One-track **WAV playback** from disk into Oboe output | Untouched | Hidden dev: load WAV, play, transport sample, xruns |
 | **N3C** | One-track playback + **mic overdub** to WAV (N2 duplex + file reader) | Untouched | Hidden dev: overdub with `defaultRecordLatencyOffsetSamples` |
 | **N3D** | **Four-track WAV mixer** + mute/solo/gain + click | Untouched | Hidden dev: 4 loaded WAVs, mix, transport to tape end |
-| **N3E** | Connect **hidden native recorder mode** to real transport/arm UI (feature flag) | Parallel path | User-opt-in; still no legacy removal |
+| **N3E** | Connect **hidden native recorder mode** to real transport/arm UI (feature flag) | Parallel path | User-opt-in; still no legacy removal — **see [N3E_INTEGRATION_PLAN.md](N3E_INTEGRATION_PLAN.md)** |
 | **N3F** | Session metadata: samples in JSON, M4A→WAV migration helper | Dual engine | `trackTapeStartSamples`, `recordLatencyOffsetSamples` persisted |
 
 **N3B technical notes:**
