@@ -1085,6 +1085,8 @@ class Session {
   int bpm;
   bool metronomeOn;
   String metronomeSound;
+  /// `legacy` (default) or `native_test` (dev sandbox only).
+  String audioEngine;
 
   Session({
     required this.projectName,
@@ -1102,6 +1104,7 @@ class Session {
     required this.bpm,
     required this.metronomeOn,
     required this.metronomeSound,
+    this.audioEngine = kOrpheusAudioEngineLegacy,
   });
 
   Map<String, dynamic> toJson() {
@@ -1121,6 +1124,7 @@ class Session {
       'bpm': bpm,
       'metronomeOn': metronomeOn,
       'metronomeSound': metronomeSound,
+      'audioEngine': audioEngine,
     };
   }
 
@@ -1153,6 +1157,7 @@ class Session {
       bpm: json['bpm'] as int? ?? 120,
       metronomeOn: json['metronomeOn'] as bool? ?? false,
       metronomeSound: json['metronomeSound'] as String? ?? 'CLICK',
+      audioEngine: parseProjectAudioEngineFromSessionJson(json),
     );
   }
 }
@@ -1600,6 +1605,7 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
     with SingleTickerProviderStateMixin {
   String? _lastProjectName;
   final List<String> _allProjects = [];
+  final Map<String, bool> _nativeTestProjectFlags = {};
   late AnimationController _idleCtrl;
 
   @override
@@ -1627,6 +1633,7 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
       }
 
       final projDir = Directory('${dir.path}/OrpheusDeck');
+      _nativeTestProjectFlags.clear();
       if (await projDir.exists()) {
         final entities = projDir.listSync();
         _allProjects.clear();
@@ -1634,8 +1641,11 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
           if (e is Directory) {
             String name = e.path.split(RegExp(r'[/\\]')).last;
             _allProjects.add(name);
+            _nativeTestProjectFlags[name] =
+                await _isNativeTestProjectFolder(dir.path, name);
           }
         }
+        _allProjects.sort();
       }
 
       if (mounted) setState(() {});
@@ -1648,6 +1658,56 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
     String clean = input.replaceAll(RegExp(r'[\\/:*?"<>|]'), '').trim();
     if (clean.isEmpty) return "SESSION_001";
     return clean;
+  }
+
+  Future<bool> _isNativeTestProjectFolder(
+    String deckRootPath,
+    String projectName,
+  ) async {
+    if (projectName.startsWith(kOrpheusNativeTestProjectNamePrefix)) {
+      return true;
+    }
+    try {
+      final file = File('$deckRootPath/$projectName/session.json');
+      if (!await file.exists()) {
+        return false;
+      }
+      final dynamic raw = jsonDecode(await file.readAsString());
+      if (raw is Map<String, dynamic>) {
+        return isNativeTestAudioEngine(
+          parseProjectAudioEngineFromSessionJson(raw),
+        );
+      }
+    } catch (e, s) {
+      debugPrint('Orpheus Deck: native test flag read error $e\n$s');
+    }
+    return false;
+  }
+
+  String _nextNativeTestProjectName() {
+    var index = 1;
+    while (true) {
+      final name =
+          '$kOrpheusNativeTestProjectNamePrefix${index.toString().padLeft(3, '0')}';
+      if (!_allProjects.contains(name)) {
+        return name;
+      }
+      index++;
+    }
+  }
+
+  void _createNativeTestProject() {
+    final name = _nextNativeTestProjectName();
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RecorderScreen(
+          projectName: name,
+          isNewProject: true,
+          createAsNativeTestProject: true,
+        ),
+      ),
+    );
   }
 
   void _startNewProject() {
@@ -1715,10 +1775,31 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
                     itemCount: _allProjects.length,
                     itemBuilder: (context, idx) {
                       String name = _allProjects[idx];
+                      final bool isNativeTest =
+                          _nativeTestProjectFlags[name] == true;
                       return ListTile(
-                        title: Text(name,
-                            style: const TextStyle(
-                                color: Colors.white, fontFamily: 'monospace')),
+                        title: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              name,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                            if (isNativeTest)
+                              const Text(
+                                'NATIVE TEST PROJECT',
+                                style: TextStyle(
+                                  color: Colors.white38,
+                                  fontFamily: 'monospace',
+                                  fontSize: 9,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                          ],
+                        ),
                         onTap: () {
                           Navigator.pop(context);
                           Navigator.pushReplacement(
@@ -1824,6 +1905,13 @@ class _CassetteHomeScreenState extends State<CassetteHomeScreen>
                       const SizedBox(height: 16),
                     ],
                     _MenuBtn("START NEW PROJECT", _startNewProject),
+                    if (kDebugMode) ...[
+                      const SizedBox(height: 16),
+                      _MenuBtn(
+                        "CREATE NATIVE TEST PROJECT",
+                        _createNativeTestProject,
+                      ),
+                    ],
                     if (hasProjects) ...[
                       const SizedBox(height: 16),
                       _MenuBtn("LOAD PROJECT", _loadProject),
@@ -2079,11 +2167,13 @@ class _MenuBtnState extends State<_MenuBtn> {
 class RecorderScreen extends StatefulWidget {
   final String projectName;
   final bool isNewProject;
+  final bool createAsNativeTestProject;
 
   const RecorderScreen({
     super.key,
     required this.projectName,
     required this.isNewProject,
+    this.createAsNativeTestProject = false,
   });
 
   @override
@@ -2091,8 +2181,12 @@ class RecorderScreen extends StatefulWidget {
 }
 
 class OrpheusConsole extends RecorderScreen {
-  const OrpheusConsole(
-      {super.key, required super.projectName, required super.isNewProject});
+  const OrpheusConsole({
+    super.key,
+    required super.projectName,
+    required super.isNewProject,
+    super.createAsNativeTestProject,
+  });
 }
 
 class _RecorderScreenState extends State<RecorderScreen> {
@@ -2110,6 +2204,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
   late String _projectName;
   DateTime _sessionCreatedAt = DateTime.now();
+  String _projectAudioEngine = kOrpheusAudioEngineLegacy;
 
   final List<bool> _armedTracks = [false, false, false, false];
   final List<String?> _trackFiles = [null, null, null, null];
@@ -2592,9 +2687,27 @@ class _RecorderScreenState extends State<RecorderScreen> {
     }
   }
 
+  bool get _isNativeTestProject =>
+      isNativeTestAudioEngine(_projectAudioEngine);
+
+  void _scheduleNativeTestProjectToastIfNeeded() {
+    if (!kDebugMode || !_isNativeTestProject) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      showOrpheusOledToast(context, 'NATIVE TEST PROJECT');
+    });
+  }
+
   Future<void> _initializeNewProject(String name) async {
     _projectName = name;
     _sessionCreatedAt = DateTime.now();
+    _projectAudioEngine = widget.createAsNativeTestProject && kDebugMode
+        ? kOrpheusAudioEngineNativeTest
+        : kOrpheusAudioEngineLegacy;
     for (int i = 0; i < 4; i++) {
       _trackFiles[i] = null;
       _armedTracks[i] = false;
@@ -2612,6 +2725,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
     _updateMixerState();
     await _saveSession();
+    _scheduleNativeTestProjectToastIfNeeded();
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _loadSession() async {
@@ -2644,6 +2761,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
         setState(() {
           _projectName = session.projectName;
           _sessionCreatedAt = session.createdAt;
+          _projectAudioEngine = session.audioEngine;
           for (int i = 0; i < 4; i++) {
             _trackFiles[i] = session.trackFiles[i];
             _trackOffsets[i] = session.trackOffsets[i];
@@ -2667,6 +2785,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
       await _recoverOrphanedRecordings();
       _updateMixerState();
       await _setLastProjectName(_projectName);
+      _scheduleNativeTestProjectToastIfNeeded();
     } catch (e) {
       debugPrint("Orpheus Deck: Error loading session: $e");
     }
@@ -2690,6 +2809,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
         bpm: _bpm,
         metronomeOn: _metronomeOn,
         metronomeSound: _metronomeSound,
+        audioEngine: _projectAudioEngine,
       );
 
       final dir = await getApplicationDocumentsDirectory();
@@ -4331,7 +4451,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
       experimentalNativeAudioEngineEnabled:
           OrpheusSettings.instance.experimentalNativeAudioEngineEnabled,
       isDebugBuild: kDebugMode,
-      projectIsNativeEligible: kOrpheusDevNativeProjectEligibleOverride,
+      projectAudioEngine: _projectAudioEngine,
       projectHasLegacyM4aTracks: _projectHasLegacyM4aTracks(),
       platformIsAndroid: Platform.isAndroid,
     );
@@ -4339,6 +4459,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
   String _recorderEngineDebugLine() =>
       formatRecorderEngineDebugLine(_recorderEngineSelection());
+
+  String _projectEngineDebugLine() =>
+      formatProjectEngineDebugLine(_projectAudioEngine);
 
   List<double> _getAmplitudesForTrack(int index) {
     if (_isRecording && _armedTracks[index]) {
@@ -5148,8 +5271,9 @@ class _RecorderScreenState extends State<RecorderScreen> {
                 onProjectTap: _showProjectMenu,
                 hasUndo: _lastUndo.hasUndo,
                 onUndo: _performUndo,
-                debugEngineLine:
-                    kDebugMode ? _recorderEngineDebugLine() : null,
+                debugEngineLine: kDebugMode ? _recorderEngineDebugLine() : null,
+                debugProjectEngineLine:
+                    kDebugMode ? _projectEngineDebugLine() : null,
               ),
               const SizedBox(height: 12),
               Expanded(
@@ -5526,6 +5650,7 @@ class DeckHeader extends StatelessWidget {
   final bool hasUndo;
   final VoidCallback onUndo;
   final String? debugEngineLine;
+  final String? debugProjectEngineLine;
 
   const DeckHeader({
     super.key,
@@ -5536,6 +5661,7 @@ class DeckHeader extends StatelessWidget {
     this.hasUndo = false,
     required this.onUndo,
     this.debugEngineLine,
+    this.debugProjectEngineLine,
   });
 
   @override
@@ -5629,6 +5755,18 @@ class DeckHeader extends StatelessWidget {
                     letterSpacing: 1,
                   ),
                 ),
+                if (debugProjectEngineLine != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    debugProjectEngineLine!,
+                    style: const TextStyle(
+                      color: Colors.white38,
+                      fontFamily: 'monospace',
+                      fontSize: 7,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
                 if (debugEngineLine != null) ...[
                   const SizedBox(height: 2),
                   Text(

@@ -1,9 +1,14 @@
 /// Pure-Dart engine selection for N3E (no native calls, no session I/O).
 library;
 
-/// Dev-only: set `true` locally to simulate a native-eligible project in debug UI.
-/// Must stay `false` in committed builds until N3F/N3E-A explicitly enable eligibility.
-const bool kOrpheusDevNativeProjectEligibleOverride = false;
+/// Normal four-track cassette projects (M4A / legacy path).
+const String kOrpheusAudioEngineLegacy = 'legacy';
+
+/// Dev-only native integration sandbox (WAV path in later phases).
+const String kOrpheusAudioEngineNativeTest = 'native_test';
+
+/// Prefix for auto-named dev native test projects on CassetteHomeScreen.
+const String kOrpheusNativeTestProjectNamePrefix = 'NATIVE_TEST_';
 
 enum OrpheusAudioEngineKind {
   legacy,
@@ -27,17 +32,38 @@ class RecorderEngineSelection {
   bool get isLegacy => selectedKind == OrpheusAudioEngineKind.legacy;
 }
 
+/// Parses [session.json] `audioEngine`; missing/unknown → legacy.
+String parseProjectAudioEngineFromSessionJson(Map<String, dynamic> json) {
+  final raw = json['audioEngine'];
+  if (raw == kOrpheusAudioEngineNativeTest) {
+    return kOrpheusAudioEngineNativeTest;
+  }
+  return kOrpheusAudioEngineLegacy;
+}
+
+bool isNativeTestAudioEngine(String projectAudioEngine) =>
+    projectAudioEngine == kOrpheusAudioEngineNativeTest;
+
 /// Chooses legacy vs native-experimental without touching audio devices.
 RecorderEngineSelection selectRecorderEngine({
   required bool experimentalNativeAudioEngineEnabled,
   required bool isDebugBuild,
-  required bool projectIsNativeEligible,
+  required String projectAudioEngine,
   required bool projectHasLegacyM4aTracks,
   required bool platformIsAndroid,
 }) {
   final bool nativeRequested = experimentalNativeAudioEngineEnabled;
+  final bool projectIsNativeTest = isNativeTestAudioEngine(projectAudioEngine);
 
   if (!nativeRequested) {
+    if (projectIsNativeTest) {
+      return const RecorderEngineSelection(
+        selectedKind: OrpheusAudioEngineKind.legacy,
+        nativeRequested: false,
+        nativeEligible: true,
+        reason: 'NATIVE AVAILABLE',
+      );
+    }
     return const RecorderEngineSelection(
       selectedKind: OrpheusAudioEngineKind.legacy,
       nativeRequested: false,
@@ -73,7 +99,7 @@ RecorderEngineSelection selectRecorderEngine({
     );
   }
 
-  if (!projectIsNativeEligible) {
+  if (!projectIsNativeTest) {
     return const RecorderEngineSelection(
       selectedKind: OrpheusAudioEngineKind.legacy,
       nativeRequested: true,
@@ -101,8 +127,18 @@ String formatRecorderEngineDebugLine(RecorderEngineSelection selection) {
           return 'ENGINE: LEGACY - LEGACY M4A PROJECT';
         case 'NATIVE TEST PROJECT REQUIRED':
           return 'ENGINE: LEGACY - NATIVE TEST PROJECT REQUIRED';
+        case 'NATIVE AVAILABLE':
+          return 'ENGINE: LEGACY - NATIVE AVAILABLE';
         default:
           return 'ENGINE: LEGACY';
       }
   }
+}
+
+/// Debug project-type line (kDebugMode only).
+String formatProjectEngineDebugLine(String projectAudioEngine) {
+  if (isNativeTestAudioEngine(projectAudioEngine)) {
+    return 'PROJECT ENGINE: NATIVE TEST';
+  }
+  return 'PROJECT ENGINE: LEGACY';
 }

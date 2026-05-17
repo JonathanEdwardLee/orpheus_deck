@@ -1,7 +1,7 @@
 # N3E — Hidden Native Recorder Mode Integration Plan
 
 **Branch:** `phase-n-native-audio`  
-**Status:** N3E-E complete — engine selector + eligibility guard; recorder behavior unchanged  
+**Status:** N3E-F complete — dev native test projects + session metadata; recorder audio unchanged  
 **Prerequisites (complete):** N1, N2 (N2B/N2D/N2E), N3B, N3C, N3C2, N3D  
 **Companion:** [N3_ARCHITECTURE.md](N3_ARCHITECTURE.md), [ORPHEUS_NATIVE_AUDIO_PLAN.md](ORPHEUS_NATIVE_AUDIO_PLAN.md), [ORPHEUS_DESIGN_MANIFESTO.md](ORPHEUS_DESIGN_MANIFESTO.md)
 
@@ -339,7 +339,8 @@ Use this before removing “experimental” or touching default engine:
 | N3E-C code | `lib/recorder/*` abstraction + legacy placeholder | **Done** — no UI delegation yet |
 | N3E-D code | `experimentalNativeAudioEngineEnabled` in `settings.json` | **Done** — toggle only, no routing |
 | N3E-E code | `recorder_engine_selector.dart` eligibility guard | **Done** — selection only, no routing |
-| N3E-A+ code | delegate transport, `orpheus_n3e_*` | **Not started** |
+| N3E-F code | `native_test` projects + `session.json` metadata | **Done** — eligibility only, no routing |
+| N3E-G+ code | native playback bridge for `native_test` projects | **Not started** |
 | N3F | Session samples + M4A migration | Planned |
 | N4 | Sample-accurate export | Planned |
 
@@ -425,4 +426,35 @@ Use this before removing “experimental” or touching default engine:
 
 ---
 
-*Document version: N3E — updated after N3E-E (2026-05-16).*
+## 14. N3E-F implemented
+
+**Scope:** Dev-only **native test project** type and selector gating — **no native audio routing**.
+
+| Item | Detail |
+|------|--------|
+| Create path | CassetteHomeScreen → **CREATE NATIVE TEST PROJECT** (`kDebugMode` only) |
+| Auto name | `NATIVE_TEST_001`, `NATIVE_TEST_002`, … |
+| Session field | `audioEngine`: `"legacy"` (default) or `"native_test"` |
+| Old sessions | Missing `audioEngine` → **legacy** |
+| M4A on disk | Forces **legacy** selection (`LEGACY M4A PROJECT`) even if `audioEngine` is `native_test` |
+| Recorder audio | `_play` / `_record` / `_stop` / export unchanged (still M4A + just_audio) |
+
+**Selector (debug header):**
+
+| Condition | Header |
+|-----------|--------|
+| Normal project, toggle OFF | `ENGINE: LEGACY` |
+| Normal project, toggle ON | `ENGINE: LEGACY - NATIVE TEST PROJECT REQUIRED` |
+| `native_test`, toggle OFF | `ENGINE: LEGACY - NATIVE AVAILABLE` |
+| `native_test`, toggle ON, no M4A | `ENGINE: NATIVE EXPERIMENTAL SELECTED - NOT WIRED` |
+| Any project with `.m4a` tracks | `ENGINE: LEGACY - LEGACY M4A PROJECT` |
+
+**Debug lines:** `PROJECT ENGINE: LEGACY` / `NATIVE TEST` plus engine line above.
+
+**Toast:** `NATIVE TEST PROJECT` on load (debug, `native_test` only).
+
+**Next step:** **N3E-G** — native playback-only bridge when `RecorderEngineSelection` is `nativeExperimental` (read flag + delegate PLAY only; WAV record path later).
+
+---
+
+*Document version: N3E — updated after N3E-F (2026-05-16).*
