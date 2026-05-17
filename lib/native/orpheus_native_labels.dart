@@ -312,6 +312,8 @@ class OrpheusNativeLabels {
         'CLICKS: ${d.clicksDetected} / ${d.clicksExpected}\n'
         'MEASURED OFFSET: ${d.measuredMedianOffsetSamples} samples / '
         '${d.measuredMedianOffsetMs.toStringAsFixed(1)} ms\n'
+        'PROFILE OFFSET USED: ${d.defaultRecordLatencyOffsetSamples} samples / '
+        '${d.profileOffsetMs.toStringAsFixed(1)} ms\n'
         'PROFILE RESIDUAL: ${d.profileResidualSamples} samples / '
         '${d.profileResidualMs.toStringAsFixed(1)} ms\n'
         'PROFILE RESULT: ${d.profileCompensationResultLabel}\n'
