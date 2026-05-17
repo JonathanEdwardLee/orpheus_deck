@@ -6,6 +6,7 @@ import 'package:ffi/ffi.dart';
 import 'orpheus_native_duplex_bindings.dart';
 import 'orpheus_native_n3_bindings.dart';
 import 'orpheus_native_n3c_bindings.dart';
+import 'orpheus_native_n3d_bindings.dart';
 
 /// Dart copy of native diagnostics (safe after FFI buffer is freed).
 class OrpheusNativeDiagnosticsData {
@@ -363,6 +364,78 @@ class OrpheusNativeBindings {
       .lookup<NativeFunction<Void Function()>>('orpheus_n3c_shutdown')
       .asFunction();
 
+  late final int Function() n3dInit = lib
+      .lookup<NativeFunction<Int32 Function()>>('orpheus_n3d_init')
+      .asFunction();
+
+  late final int Function(Pointer<Utf8> cacheDir) n3dGenerateAndLoadTestTracks =
+      lib
+          .lookup<NativeFunction<Int32 Function(Pointer<Utf8> cacheDir)>>(
+            'orpheus_n3d_generate_and_load_test_tracks',
+          )
+          .asFunction();
+
+  late final int Function() n3dOpenStreams = lib
+      .lookup<NativeFunction<Int32 Function()>>('orpheus_n3d_open_streams')
+      .asFunction();
+
+  late final int Function(int startSample) n3dStartMix = lib
+      .lookup<NativeFunction<Int32 Function(Int64 startSample)>>(
+        'orpheus_n3d_start_mix',
+      )
+      .asFunction();
+
+  late final void Function() n3dStopMix = lib
+      .lookup<NativeFunction<Void Function()>>('orpheus_n3d_stop_mix')
+      .asFunction();
+
+  late final void Function() n3dResetMixer = lib
+      .lookup<NativeFunction<Void Function()>>('orpheus_n3d_reset_mixer')
+      .asFunction();
+
+  late final int Function(int trackIndex, double gain) n3dSetTrackGain = lib
+      .lookup<NativeFunction<Int32 Function(Int32 trackIndex, Float gain)>>(
+        'orpheus_n3d_set_track_gain',
+      )
+      .asFunction();
+
+  late final int Function(int trackIndex, int muted) n3dSetTrackMute = lib
+      .lookup<NativeFunction<Int32 Function(Int32 trackIndex, Int32 muted)>>(
+        'orpheus_n3d_set_track_mute',
+      )
+      .asFunction();
+
+  late final int Function(int trackIndex, int solo) n3dSetTrackSolo = lib
+      .lookup<NativeFunction<Int32 Function(Int32 trackIndex, Int32 solo)>>(
+        'orpheus_n3d_set_track_solo',
+      )
+      .asFunction();
+
+  late final int Function() n3dGetTransportSample = lib
+      .lookup<NativeFunction<Int64 Function()>>(
+        'orpheus_n3d_get_transport_sample',
+      )
+      .asFunction();
+
+  late final int Function() n3dIsPlaybackComplete = lib
+      .lookup<NativeFunction<Int32 Function()>>(
+        'orpheus_n3d_is_playback_complete',
+      )
+      .asFunction();
+
+  late final void Function(Pointer<OrpheusN3MixerDiagnostics> out)
+      n3dGetDiagnostics = lib
+          .lookup<
+              NativeFunction<
+                  Void Function(Pointer<OrpheusN3MixerDiagnostics> out)>>(
+            'orpheus_n3d_get_diagnostics',
+          )
+          .asFunction();
+
+  late final void Function() n3dShutdown = lib
+      .lookup<NativeFunction<Void Function()>>('orpheus_n3d_shutdown')
+      .asFunction();
+
   OrpheusN3PlaybackDiagnosticsData readN3Diagnostics() {
     final ptr = calloc<OrpheusN3PlaybackDiagnostics>();
     try {
@@ -516,6 +589,62 @@ class OrpheusNativeBindings {
         measuredSelfResidualSamples: d.measuredSelfResidualSamples,
         profileResidualSamples: d.profileResidualSamples,
         expectedRecordedFrames: d.expectedRecordedFrames,
+      );
+    } finally {
+      calloc.free(ptr);
+    }
+  }
+
+  OrpheusN3MixerDiagnosticsData readN3dDiagnostics() {
+    final ptr = calloc<OrpheusN3MixerDiagnostics>();
+    try {
+      n3dGetDiagnostics(ptr);
+      final d = ptr.ref;
+      return OrpheusN3MixerDiagnosticsData(
+        sampleRate: d.sampleRate,
+        framesPerBurst: d.framesPerBurst,
+        bufferSizeInFrames: d.bufferSizeInFrames,
+        xRunCount: d.xRunCount,
+        apiUsed: d.apiUsed,
+        performanceMode: d.performanceMode,
+        sharingMode: d.sharingMode,
+        outputStreamOpened: d.outputStreamOpened,
+        tracksLoaded: d.tracksLoaded,
+        tracksActive: d.tracksActive,
+        soloActive: d.soloActive,
+        playbackComplete: d.playbackComplete,
+        isPlaying: d.isPlaying,
+        errorCode: d.errorCode,
+        exclusiveAttempted: d.exclusiveAttempted,
+        sharedFallbackUsed: d.sharedFallbackUsed,
+        track0GainTimes1000: d.track0GainTimes1000,
+        track1GainTimes1000: d.track1GainTimes1000,
+        track2GainTimes1000: d.track2GainTimes1000,
+        track3GainTimes1000: d.track3GainTimes1000,
+        track0Muted: d.track0Muted,
+        track1Muted: d.track1Muted,
+        track2Muted: d.track2Muted,
+        track3Muted: d.track3Muted,
+        track0Solo: d.track0Solo,
+        track1Solo: d.track1Solo,
+        track2Solo: d.track2Solo,
+        track3Solo: d.track3Solo,
+        currentTransportSample: d.currentTransportSample,
+        transportStartSample: d.transportStartSample,
+        transportStopSample: d.transportStopSample,
+        outputCallbackCount: d.outputCallbackCount,
+        track0StartSample: d.track0StartSample,
+        track1StartSample: d.track1StartSample,
+        track2StartSample: d.track2StartSample,
+        track3StartSample: d.track3StartSample,
+        track0EffectiveStartSample: d.track0EffectiveStartSample,
+        track1EffectiveStartSample: d.track1EffectiveStartSample,
+        track2EffectiveStartSample: d.track2EffectiveStartSample,
+        track3EffectiveStartSample: d.track3EffectiveStartSample,
+        track0FramesMixed: d.track0FramesMixed,
+        track1FramesMixed: d.track1FramesMixed,
+        track2FramesMixed: d.track2FramesMixed,
+        track3FramesMixed: d.track3FramesMixed,
       );
     } finally {
       calloc.free(ptr);

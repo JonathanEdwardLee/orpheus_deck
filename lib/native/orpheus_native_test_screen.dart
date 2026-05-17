@@ -12,6 +12,7 @@ import 'orpheus_native_labels.dart';
 import 'orpheus_native_latency_profile.dart';
 import 'orpheus_native_n3_bindings.dart';
 import 'orpheus_native_n3c_bindings.dart';
+import 'orpheus_native_n3d_bindings.dart';
 
 /// Hidden Phase N1/N2 dev screen — not linked from normal user flow.
 class OrpheusNativeTestScreen extends StatefulWidget {
@@ -48,15 +49,18 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
   OrpheusLatencyProfileResult? _n2eProfile;
   OrpheusN3PlaybackDiagnosticsData? _n3Diag;
   OrpheusN3OverdubDiagnosticsData? _n3cDiag;
+  OrpheusN3MixerDiagnosticsData? _n3dDiag;
 
   @override
   void dispose() {
+    OrpheusNativeAudio.instance.stopN3d();
     OrpheusNativeAudio.instance.stopN3b();
     OrpheusNativeAudio.instance.stopN3c();
     super.dispose();
   }
 
   Future<void> _runHandshake() async {
+    await OrpheusNativeAudio.instance.stopN3d();
     await OrpheusNativeAudio.instance.stopN3c();
     await OrpheusNativeAudio.instance.stopN3b();
     setState(() {
@@ -90,6 +94,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
   }
 
   Future<void> _runCalibrationProfile() async {
+    await OrpheusNativeAudio.instance.stopN3d();
     await OrpheusNativeAudio.instance.stopN3c();
     await OrpheusNativeAudio.instance.stopN3b();
     setState(() {
@@ -157,6 +162,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
   }
 
   Future<void> _startN3bAt(int startSample) async {
+    await OrpheusNativeAudio.instance.stopN3d();
     await OrpheusNativeAudio.instance.stopN3c();
     setState(() {
       _busy = true;
@@ -246,6 +252,107 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
 
   Future<void> _runN3c() => _startN3cAt(0);
 
+  Future<void> _startN3dAt(int startSample) async {
+    await OrpheusNativeAudio.instance.stopN3b();
+    await OrpheusNativeAudio.instance.stopN3c();
+    setState(() {
+      _busy = true;
+      _status = 'N3D four-track mix from sample $startSample…';
+      _n3dDiag = null;
+    });
+    try {
+      final diag = await OrpheusNativeAudio.instance.runN3dMixer(
+        startSample: startSample,
+        onTransportTick: (d) {
+          if (!mounted) return;
+          setState(() => _n3dDiag = d);
+        },
+      );
+      if (!mounted) return;
+      setState(() {
+        _n3dDiag = diag;
+        _status =
+            'N3D complete.\n'
+            'transport=${diag.currentTransportSample} '
+            'xruns=${diag.xRunCount} '
+            'complete=${diag.playbackComplete == 1 ? 'YES' : 'NO'}';
+      });
+    } catch (e, st) {
+      debugPrint('Orpheus N3D failed: $e\n$st');
+      if (!mounted) return;
+      setState(() => _status = 'N3D failed: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
+  Future<void> _runN3d() => _startN3dAt(0);
+
+  Future<void> _stopN3d() async {
+    setState(() {
+      _busy = true;
+      _status = 'Stopping N3D…';
+    });
+    try {
+      await OrpheusNativeAudio.instance.stopN3d();
+      if (!mounted) return;
+      setState(() {
+        _n3dDiag = null;
+        _status = 'N3D stopped.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
+  Future<void> _n3dMuteTrack2() async {
+    try {
+      await OrpheusNativeAudio.instance.ensureN3dSession();
+      OrpheusNativeAudio.instance.n3dSetTrackMute(1, true);
+      if (!mounted) return;
+      setState(() {
+        _n3dDiag = OrpheusNativeAudio.instance.readN3dDiagnostics();
+        _status = 'N3D: track 2 muted (index 1). Re-run mix to hear.';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _status = 'N3D mute failed: $e');
+    }
+  }
+
+  Future<void> _n3dSoloTrack3() async {
+    try {
+      await OrpheusNativeAudio.instance.ensureN3dSession();
+      OrpheusNativeAudio.instance.n3dSetTrackSolo(2, true);
+      if (!mounted) return;
+      setState(() {
+        _n3dDiag = OrpheusNativeAudio.instance.readN3dDiagnostics();
+        _status = 'N3D: track 3 solo (index 2). Re-run mix to hear.';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _status = 'N3D solo failed: $e');
+    }
+  }
+
+  Future<void> _n3dResetMixer() async {
+    try {
+      OrpheusNativeAudio.instance.n3dResetMixer();
+      if (!mounted) return;
+      setState(() {
+        _n3dDiag = OrpheusNativeAudio.instance.readN3dDiagnostics();
+        _status = 'N3D mixer reset (gain/mute/solo defaults).';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _status = 'N3D reset failed: $e');
+    }
+  }
+
   Future<void> _stopN3c() async {
     setState(() {
       _busy = true;
@@ -266,6 +373,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
   }
 
   Future<void> _runDuplex() async {
+    await OrpheusNativeAudio.instance.stopN3d();
     await OrpheusNativeAudio.instance.stopN3c();
     await OrpheusNativeAudio.instance.stopN3b();
     setState(() {
@@ -414,6 +522,35 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
             ),
           ),
         ],
+      ],
+    );
+  }
+
+  Widget _buildN3dSummary(OrpheusN3MixerDiagnosticsData d) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _sectionTitle('N3D FOUR-TRACK MIXER'),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.white24),
+            color: Colors.white.withValues(alpha: 0.06),
+          ),
+          child: Text(
+            OrpheusNativeLabels.formatN3dMixer(d),
+            style: _mono.copyWith(
+              color: d.playbackComplete == 1 && d.xRunCount == 0
+                  ? Colors.greenAccent
+                  : (d.isPlaying == 1
+                      ? Colors.white
+                      : Colors.orangeAccent),
+              fontWeight: FontWeight.bold,
+              height: 1.45,
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -613,6 +750,17 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
               style: _monoSmall,
             ),
           ],
+          if (_n3dDiag != null) ...[
+            if (_n1Diag != null ||
+                _n2Diag != null ||
+                _n3Diag != null ||
+                _n3cDiag != null)
+              const SizedBox(height: 12),
+            Text(
+              'N3D raw:\n${_rawN3dBlock(_n3dDiag!)}',
+              style: _monoSmall,
+            ),
+          ],
         ],
       ],
     );
@@ -631,7 +779,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         title: const Text(
-          'Native Audio Test (N1–N3)',
+          'Native Audio Test (N1–N3D)',
           style: TextStyle(fontFamily: 'monospace', fontSize: 14),
         ),
       ),
@@ -649,7 +797,8 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
               'N2E RUNS 3 PASSES AND PICKS A RECOMMENDED ROUTE OFFSET.\n'
               'N3B PLAYS A NATIVE TEST WAV WITH SAMPLE TRANSPORT.\n'
               'N3C OVERDUBS MIC OVER THAT WAV WITH ONE TRANSPORT CLOCK.\n'
-              'NEITHER USES YOUR CURRENT PROJECT OR FOUR-TRACK SESSION.',
+              'N3D MIXES FOUR NATIVE WAV TRACKS WITH GAIN/MUTE/SOLO.\n'
+              'NONE USE YOUR CURRENT PROJECT OR FOUR-TRACK SESSION.',
               style: _mono.copyWith(color: Colors.white54),
             ),
             const SizedBox(height: 16),
@@ -808,6 +957,72 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
               ],
             ),
             const SizedBox(height: 10),
+            FilledButton(
+              onPressed: _busy ? null : _runN3d,
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.cyan.shade900,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text(
+                'RUN N3D FOUR-TRACK MIXER',
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                TextButton(
+                  onPressed: _busy ? null : () => _startN3dAt(0),
+                  child: const Text(
+                    'START N3D AT 0',
+                    style: TextStyle(fontFamily: 'monospace'),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _busy
+                      ? null
+                      : () => _startN3dAt(_n3SeekTwoSecondsSamples),
+                  child: const Text(
+                    'START N3D AT 2 SEC',
+                    style: TextStyle(fontFamily: 'monospace'),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _busy ? null : _stopN3d,
+                  child: const Text(
+                    'STOP N3D',
+                    style: TextStyle(fontFamily: 'monospace'),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _busy ? null : _n3dMuteTrack2,
+                  child: const Text(
+                    'MUTE TRK 2',
+                    style: TextStyle(fontFamily: 'monospace'),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _busy ? null : _n3dSoloTrack3,
+                  child: const Text(
+                    'SOLO TRK 3',
+                    style: TextStyle(fontFamily: 'monospace'),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _busy ? null : _n3dResetMixer,
+                  child: const Text(
+                    'RESET MIXER',
+                    style: TextStyle(fontFamily: 'monospace'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
             if (n1Path != null)
               Align(
                 alignment: Alignment.centerLeft,
@@ -872,6 +1087,7 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
             if (_n2Diag != null) _buildN2Summary(_n2Diag!),
             if (_n3Diag != null) _buildN3bSummary(_n3Diag!),
             if (_n3cDiag != null) _buildN3cSummary(_n3cDiag!),
+            if (_n3dDiag != null) _buildN3dSummary(_n3dDiag!),
             if (_n2eProfile != null) _buildN2eProfile(_n2eProfile!),
             if (_n1Diag != null || _n2Diag != null) ...[
               const Divider(color: Colors.white24, height: 24),
@@ -961,6 +1177,20 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
         'measuredSelfResidualSamples=${d.measuredSelfResidualSamples}\n'
         'expectedRecordedFrames=${d.expectedRecordedFrames}\n'
         'profileCompensationResult=${d.profileCompensationResult}';
+  }
+
+  String _rawN3dBlock(OrpheusN3MixerDiagnosticsData d) {
+    return 'tracksLoaded=${d.tracksLoaded}\n'
+        'tracksActive=${d.tracksActive}\n'
+        'currentTransportSample=${d.currentTransportSample}\n'
+        'transportStopSample=${d.transportStopSample}\n'
+        'track0Start=${d.track0StartSample} eff=${d.track0EffectiveStartSample}\n'
+        'track1Start=${d.track1StartSample} eff=${d.track1EffectiveStartSample}\n'
+        'track2Start=${d.track2StartSample} eff=${d.track2EffectiveStartSample}\n'
+        'track3Start=${d.track3StartSample} eff=${d.track3EffectiveStartSample}\n'
+        'framesMixed=${d.trackFramesMixed}\n'
+        'xRunCount=${d.xRunCount}\n'
+        'playbackComplete=${d.playbackComplete}';
   }
 }
 

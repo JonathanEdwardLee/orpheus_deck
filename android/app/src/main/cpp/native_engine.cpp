@@ -7,6 +7,7 @@
 #include "duplex_engine.h"
 #include "oboe_engine.h"
 #include "overdub_engine.h"
+#include "mixer_engine.h"
 #include "playback_engine.h"
 
 namespace {
@@ -15,6 +16,7 @@ std::unique_ptr<orpheus::OboeEngine> gEngine;
 std::unique_ptr<orpheus::DuplexEngine> gDuplexEngine;
 std::unique_ptr<orpheus::PlaybackEngine> gPlaybackEngine;
 std::unique_ptr<orpheus::OverdubEngine> gOverdubEngine;
+std::unique_ptr<orpheus::MixerEngine> gMixerEngine;
 std::string gLastError;
 /** Only for last_error string lifetime — not used in audio callbacks. */
 std::mutex gErrorMutex;
@@ -28,7 +30,15 @@ void setError(const std::string& msg) {
 
 extern "C" {
 
+static void shutdownMixerEngine() {
+    if (gMixerEngine) {
+        gMixerEngine->shutdown();
+        gMixerEngine.reset();
+    }
+}
+
 int32_t orpheus_native_init(void) {
+    shutdownMixerEngine();
     if (gOverdubEngine) {
         gOverdubEngine->shutdown();
         gOverdubEngine.reset();
@@ -115,6 +125,7 @@ void orpheus_native_shutdown(void) {
 }
 
 int32_t orpheus_native_n2_init(void) {
+    shutdownMixerEngine();
     if (gOverdubEngine) {
         gOverdubEngine->shutdown();
         gOverdubEngine.reset();
@@ -204,6 +215,7 @@ static void shutdownAllExceptOverdub() {
 
 static void shutdownOtherEnginesForN3() {
     shutdownAllExceptOverdub();
+    shutdownMixerEngine();
     if (gOverdubEngine) {
         gOverdubEngine->shutdown();
         gOverdubEngine.reset();
@@ -211,6 +223,7 @@ static void shutdownOtherEnginesForN3() {
 }
 
 int32_t orpheus_n3_init(void) {
+    shutdownMixerEngine();
     if (gOverdubEngine) {
         gOverdubEngine->shutdown();
         gOverdubEngine.reset();
@@ -425,6 +438,158 @@ void orpheus_n3c_shutdown(void) {
     if (gOverdubEngine) {
         gOverdubEngine->shutdown();
         gOverdubEngine.reset();
+    }
+}
+
+static void shutdownAllExceptMixer() {
+    if (gEngine) {
+        gEngine->shutdown();
+        gEngine.reset();
+    }
+    if (gDuplexEngine) {
+        gDuplexEngine->shutdown();
+        gDuplexEngine.reset();
+    }
+    if (gPlaybackEngine) {
+        gPlaybackEngine->shutdown();
+        gPlaybackEngine.reset();
+    }
+    if (gOverdubEngine) {
+        gOverdubEngine->shutdown();
+        gOverdubEngine.reset();
+    }
+}
+
+int32_t orpheus_n3d_init(void) {
+    shutdownAllExceptMixer();
+    if (gMixerEngine) {
+        gMixerEngine->shutdown();
+        gMixerEngine.reset();
+    }
+    gMixerEngine = std::make_unique<orpheus::MixerEngine>();
+    if (!gMixerEngine->init()) {
+        setError(gMixerEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3d_generate_and_load_test_tracks(const char* cache_dir) {
+    if (!gMixerEngine) {
+        setError("N3D engine not initialized");
+        return -1;
+    }
+    if (cache_dir == nullptr) {
+        setError("N3D null cache dir");
+        return -1;
+    }
+    if (!gMixerEngine->generateAndLoadTestTracks(std::string(cache_dir))) {
+        setError(gMixerEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3d_open_streams(void) {
+    if (!gMixerEngine) {
+        setError("N3D engine not initialized");
+        return -1;
+    }
+    if (!gMixerEngine->openStreams()) {
+        setError(gMixerEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3d_start_mix(const int64_t start_sample) {
+    if (!gMixerEngine) {
+        setError("N3D engine not initialized");
+        return -1;
+    }
+    if (!gMixerEngine->startMix(start_sample)) {
+        setError(gMixerEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+void orpheus_n3d_stop_mix(void) {
+    if (gMixerEngine) {
+        gMixerEngine->stopMix();
+    }
+}
+
+void orpheus_n3d_reset_mixer(void) {
+    if (gMixerEngine) {
+        gMixerEngine->resetMixer();
+    }
+}
+
+int32_t orpheus_n3d_set_track_gain(const int32_t track_index, const float gain) {
+    if (!gMixerEngine) {
+        setError("N3D engine not initialized");
+        return -1;
+    }
+    if (!gMixerEngine->setTrackGain(track_index, gain)) {
+        setError("N3D invalid track index");
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3d_set_track_mute(const int32_t track_index, const int32_t muted) {
+    if (!gMixerEngine) {
+        setError("N3D engine not initialized");
+        return -1;
+    }
+    if (!gMixerEngine->setTrackMute(track_index, muted)) {
+        setError("N3D invalid track index");
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3d_set_track_solo(const int32_t track_index, const int32_t solo) {
+    if (!gMixerEngine) {
+        setError("N3D engine not initialized");
+        return -1;
+    }
+    if (!gMixerEngine->setTrackSolo(track_index, solo)) {
+        setError("N3D invalid track index");
+        return -1;
+    }
+    return 0;
+}
+
+int64_t orpheus_n3d_get_transport_sample(void) {
+    if (!gMixerEngine) {
+        return 0;
+    }
+    return gMixerEngine->getTransportSample();
+}
+
+int32_t orpheus_n3d_is_playback_complete(void) {
+    if (!gMixerEngine) {
+        return 0;
+    }
+    return gMixerEngine->isPlaybackComplete() ? 1 : 0;
+}
+
+void orpheus_n3d_get_diagnostics(OrpheusN3MixerDiagnostics* out) {
+    if (out == nullptr) {
+        return;
+    }
+    *out = OrpheusN3MixerDiagnostics{};
+    if (gMixerEngine) {
+        gMixerEngine->fillDiagnostics(out);
+    }
+}
+
+void orpheus_n3d_shutdown(void) {
+    if (gMixerEngine) {
+        gMixerEngine->shutdown();
+        gMixerEngine.reset();
     }
 }
 

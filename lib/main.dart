@@ -29,6 +29,7 @@ import 'widgets/tape_reel_transport.dart';
 
 import 'orpheus_latency_calibration.dart';
 import 'native/orpheus_native_test_screen.dart';
+import 'recorder/recorder_engine_selector.dart';
 
 /// One cassette side — fixed transport length (0 … tapeLengthMs).
 /// Clip lengths do not shorten the tape; matches ORPHEUS_DESIGN_MANIFESTO.md.
@@ -147,6 +148,9 @@ class OrpheusSettings {
   /// Last successful LATENCY TEST (epoch millis); diagnostic / future routing UI.
   int lastLatencyTestMs = 0;
 
+  /// N3E-D: persisted preference only — main recorder still uses legacy audio.
+  bool experimentalNativeAudioEngineEnabled = false;
+
   Future<File> _settingsFile() async {
     final dir = await getApplicationDocumentsDirectory();
     final deck = Directory('${dir.path}/OrpheusDeck');
@@ -196,12 +200,17 @@ class OrpheusSettings {
         } else {
           latencyCompensationEnabled = latRaw is bool ? latRaw : true;
         }
+
+        final dynamic nativeExpRaw = raw['experimentalNativeAudioEngineEnabled'];
+        experimentalNativeAudioEngineEnabled =
+            nativeExpRaw is bool ? nativeExpRaw : false;
       } else {
         latencyCalibrated = false;
         latencyCompensationEnabled = false;
         manualLatencyAdjustMs = 0;
         recordingCheckReminderEnabled = true;
         lastLatencyTestMs = 0;
+        experimentalNativeAudioEngineEnabled = false;
       }
     } catch (e, st) {
       debugPrint('Orpheus Deck: settings load error $e\n$st');
@@ -210,6 +219,7 @@ class OrpheusSettings {
       manualLatencyAdjustMs = 0;
       recordingCheckReminderEnabled = true;
       lastLatencyTestMs = 0;
+      experimentalNativeAudioEngineEnabled = false;
     }
   }
 
@@ -222,8 +232,18 @@ class OrpheusSettings {
         'manualLatencyAdjustMs': manualLatencyAdjustMs,
         'recordingCheckReminderEnabled': recordingCheckReminderEnabled,
         'lastLatencyTestMs': lastLatencyTestMs,
+        'experimentalNativeAudioEngineEnabled':
+            experimentalNativeAudioEngineEnabled,
       }),
       flush: true,
+    );
+  }
+
+  Future<void> setExperimentalNativeAudioEngineEnabled(bool enabled) async {
+    experimentalNativeAudioEngineEnabled = enabled;
+    await save();
+    debugPrint(
+      'Orpheus Deck: settings experimentalNativeAudioEngineEnabled=$enabled',
     );
   }
 
@@ -297,6 +317,8 @@ void showOrpheusDeckSettingsDialog(
           final int manualAdj = OrpheusSettings.instance.manualLatencyAdjustMs;
           final bool recReminderOn =
               OrpheusSettings.instance.recordingCheckReminderEnabled;
+          final bool nativeExperimentalOn = OrpheusSettings
+              .instance.experimentalNativeAudioEngineEnabled;
 
           bool transportBusy() => isTransportBusy?.call() ?? false;
 
@@ -620,6 +642,84 @@ void showOrpheusDeckSettingsDialog(
                               .bumpManualLatencyAdjustMs(10)),
                     ],
                   ),
+                  if (kDebugMode) ...[
+                    const SizedBox(height: 16),
+                    const Text(
+                      'EXPERIMENTAL (DEBUG)',
+                      style: TextStyle(
+                        color: Colors.white54,
+                        fontFamily: 'monospace',
+                        fontSize: 10,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'USE NATIVE AUDIO ENGINE (EXPERIMENTAL)',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontFamily: 'monospace',
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        Switch(
+                          value: nativeExperimentalOn,
+                          activeThumbColor: Colors.black,
+                          activeTrackColor: Colors.white,
+                          inactiveThumbColor: Colors.white54,
+                          inactiveTrackColor: Colors.white24,
+                          onChanged: (v) async {
+                            if (transportBusy()) {
+                              showOrpheusOledToast(
+                                outerContext,
+                                'STOP PLAY/REC FIRST',
+                              );
+                              return;
+                            }
+                            await OrpheusSettings.instance
+                                .setExperimentalNativeAudioEngineEnabled(v);
+                            if (!outerContext.mounted) {
+                              return;
+                            }
+                            setDialogState(() {});
+                            showOrpheusOledToast(
+                              outerContext,
+                              v
+                                  ? 'EXPERIMENTAL. NOT USED BY MAIN RECORDER YET.'
+                                  : 'LEGACY ENGINE ACTIVE',
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      nativeExperimentalOn
+                          ? 'EXPERIMENTAL. NOT USED BY MAIN RECORDER YET.'
+                          : 'LEGACY ENGINE ACTIVE',
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontFamily: 'monospace',
+                        fontSize: 9,
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'LONG-PRESS ABOUT BELOW FOR NATIVE AUDIO TEST.',
+                      style: TextStyle(
+                        color: Colors.white38,
+                        fontFamily: 'monospace',
+                        fontSize: 9,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   const Text(
                     'ABOUT',
@@ -1996,6 +2096,10 @@ class OrpheusConsole extends RecorderScreen {
 }
 
 class _RecorderScreenState extends State<RecorderScreen> {
+  // N3E-C seam (not wired): future field —
+  //   late OrpheusRecorderEngine _engine = createLegacyRecorderEngine();
+  // Transport/mixer still use just_audio + record directly until N3E-D/A.
+
   bool _isPlaying = false;
   bool _isRecording = false;
   bool _isExporting = false;
@@ -4213,6 +4317,29 @@ class _RecorderScreenState extends State<RecorderScreen> {
     return "IDLE";
   }
 
+  bool _projectHasLegacyM4aTracks() {
+    for (final path in _trackFiles) {
+      if (path != null && path.toLowerCase().endsWith('.m4a')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  RecorderEngineSelection _recorderEngineSelection() {
+    return selectRecorderEngine(
+      experimentalNativeAudioEngineEnabled:
+          OrpheusSettings.instance.experimentalNativeAudioEngineEnabled,
+      isDebugBuild: kDebugMode,
+      projectIsNativeEligible: kOrpheusDevNativeProjectEligibleOverride,
+      projectHasLegacyM4aTracks: _projectHasLegacyM4aTracks(),
+      platformIsAndroid: Platform.isAndroid,
+    );
+  }
+
+  String _recorderEngineDebugLine() =>
+      formatRecorderEngineDebugLine(_recorderEngineSelection());
+
   List<double> _getAmplitudesForTrack(int index) {
     if (_isRecording && _armedTracks[index]) {
       return _liveAmplitudes;
@@ -5021,6 +5148,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
                 onProjectTap: _showProjectMenu,
                 hasUndo: _lastUndo.hasUndo,
                 onUndo: _performUndo,
+                debugEngineLine:
+                    kDebugMode ? _recorderEngineDebugLine() : null,
               ),
               const SizedBox(height: 12),
               Expanded(
@@ -5396,6 +5525,7 @@ class DeckHeader extends StatelessWidget {
   final VoidCallback onProjectTap;
   final bool hasUndo;
   final VoidCallback onUndo;
+  final String? debugEngineLine;
 
   const DeckHeader({
     super.key,
@@ -5405,6 +5535,7 @@ class DeckHeader extends StatelessWidget {
     required this.onProjectTap,
     this.hasUndo = false,
     required this.onUndo,
+    this.debugEngineLine,
   });
 
   @override
@@ -5498,6 +5629,18 @@ class DeckHeader extends StatelessWidget {
                     letterSpacing: 1,
                   ),
                 ),
+                if (debugEngineLine != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    debugEngineLine!,
+                    style: const TextStyle(
+                      color: Colors.white38,
+                      fontFamily: 'monospace',
+                      fontSize: 7,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

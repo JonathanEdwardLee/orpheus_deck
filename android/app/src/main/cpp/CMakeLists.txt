@@ -18,6 +18,7 @@ add_library(orpheus_native SHARED
     duplex_engine.cpp
     playback_engine.cpp
     overdub_engine.cpp
+    mixer_engine.cpp
     click_backing.cpp
     timing_analysis.cpp
     ring_buffer.cpp

@@ -191,12 +191,69 @@ typedef struct OrpheusN3OverdubDiagnostics {
     int64_t expectedRecordedFrames;
 } OrpheusN3OverdubDiagnostics;
 
+/**
+ * Phase N3D four-track WAV mixer diagnostics — Dart mirror MUST use @Packed(8).
+ */
+typedef struct OrpheusN3MixerDiagnostics {
+    int32_t sampleRate;
+    int32_t framesPerBurst;
+    int32_t bufferSizeInFrames;
+    int32_t xRunCount;
+    int32_t apiUsed;
+    int32_t performanceMode;
+    int32_t sharingMode;
+    int32_t outputStreamOpened;
+    int32_t tracksLoaded;
+    int32_t tracksActive;
+    int32_t soloActive;
+    int32_t playbackComplete;
+    int32_t isPlaying;
+    int32_t errorCode;
+    int32_t exclusiveAttempted;
+    int32_t sharedFallbackUsed;
+    int32_t track0GainTimes1000;
+    int32_t track1GainTimes1000;
+    int32_t track2GainTimes1000;
+    int32_t track3GainTimes1000;
+    int32_t track0Muted;
+    int32_t track1Muted;
+    int32_t track2Muted;
+    int32_t track3Muted;
+    int32_t track0Solo;
+    int32_t track1Solo;
+    int32_t track2Solo;
+    int32_t track3Solo;
+    int32_t _paddingForInt64Align;
+    int32_t _padding2;
+    int32_t _padding3;
+    int32_t _padding4;
+
+    int64_t currentTransportSample;
+    int64_t transportStartSample;
+    int64_t transportStopSample;
+    int64_t outputCallbackCount;
+    int64_t track0StartSample;
+    int64_t track1StartSample;
+    int64_t track2StartSample;
+    int64_t track3StartSample;
+    int64_t track0EffectiveStartSample;
+    int64_t track1EffectiveStartSample;
+    int64_t track2EffectiveStartSample;
+    int64_t track3EffectiveStartSample;
+    int64_t track0FramesMixed;
+    int64_t track1FramesMixed;
+    int64_t track2FramesMixed;
+    int64_t track3FramesMixed;
+} OrpheusN3MixerDiagnostics;
+
 #ifdef __cplusplus
 }
 static_assert(sizeof(OrpheusN3PlaybackDiagnostics) == 112,
               "OrpheusN3PlaybackDiagnostics size must match Dart @Packed(8)");
 static_assert(sizeof(OrpheusN3OverdubDiagnostics) == 224,
               "OrpheusN3OverdubDiagnostics size must match Dart @Packed(8)");
+static_assert(sizeof(OrpheusN3MixerDiagnostics) == 256,
+              "OrpheusN3MixerDiagnostics size must match Dart @Packed(8)");
 #endif
 
 #endif  // ORPHEUS_AUDIO_TYPES_H_
