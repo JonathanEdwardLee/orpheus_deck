@@ -1996,6 +1996,10 @@ class OrpheusConsole extends RecorderScreen {
 }
 
 class _RecorderScreenState extends State<RecorderScreen> {
+  // N3E-C seam (not wired): future field —
+  //   late OrpheusRecorderEngine _engine = createLegacyRecorderEngine();
+  // Transport/mixer still use just_audio + record directly until N3E-D/A.
+
   bool _isPlaying = false;
   bool _isRecording = false;
   bool _isExporting = false;

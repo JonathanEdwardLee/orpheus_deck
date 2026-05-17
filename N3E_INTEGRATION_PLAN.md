@@ -1,7 +1,7 @@
 # N3E — Hidden Native Recorder Mode Integration Plan
 
 **Branch:** `phase-n-native-audio`  
-**Status:** Planning only — **no production code in N3E planning phase**  
+**Status:** N3E-C complete — abstraction in `lib/recorder/`; recorder behavior unchanged  
 **Prerequisites (complete):** N1, N2 (N2B/N2D/N2E), N3B, N3C, N3C2, N3D  
 **Companion:** [N3_ARCHITECTURE.md](N3_ARCHITECTURE.md), [ORPHEUS_NATIVE_AUDIO_PLAN.md](ORPHEUS_NATIVE_AUDIO_PLAN.md), [ORPHEUS_DESIGN_MANIFESTO.md](ORPHEUS_DESIGN_MANIFESTO.md)
 
@@ -336,10 +336,37 @@ Use this before removing “experimental” or touching default engine:
 |-------|------------|--------|
 | N3A–D | [N3_ARCHITECTURE.md](N3_ARCHITECTURE.md) | Done |
 | **N3E plan** | **This file** | **This document** |
-| N3E code | `lib/recorder/*`, `orpheus_n3e_*`, settings gate | **Not started** — wait for explicit implementation request |
+| N3E-C code | `lib/recorder/*` abstraction + legacy placeholder | **Done** — no UI delegation yet |
+| N3E-D+ code | settings gate, native engine, `orpheus_n3e_*` | **Not started** |
 | N3F | Session samples + M4A migration | Planned |
 | N4 | Sample-accurate export | Planned |
 
 ---
 
-*Document version: N3E planning — 2026-05-16. No production behavior change.*
+## 11. N3E-C implemented
+
+**Scope:** Recorder engine abstraction only — **no behavior change** in the main four-track recorder.
+
+| Deliverable | Location |
+|-------------|----------|
+| `OrpheusRecorderEngine` abstract API | `lib/recorder/orpheus_recorder_engine.dart` |
+| `OrpheusRecorderDiagnostics` + constants | `lib/recorder/recorder_engine_types.dart` |
+| `LegacyFlutterRecorderEngine` placeholder | `lib/recorder/legacy_flutter_recorder_engine.dart` |
+| `createLegacyRecorderEngine()` factory | `orpheus_recorder_engine.dart` |
+
+**`LegacyFlutterRecorderEngine` today:**
+
+- Mirrors transport/mixer state in memory for future diagnostics.
+- `startPlayback` / `startRecording` / `stop` are **no-ops** with `TODO(N3E)` — `lib/main.dart` still owns `_play`, `_record`, `_stop`, and `just_audio`.
+- Debug-only `debugPrint` on initialize/dispose and stub transport calls.
+
+**`RecorderScreen`:** Comment-only note for future `late OrpheusRecorderEngine _engine`; no import or delegation.
+
+**Next recommended steps (pick one when implementing):**
+
+1. **N3E-D** — Hidden “USE NATIVE AUDIO ENGINE (EXPERIMENTAL)” toggle scaffolding (default OFF, no native wiring).
+2. **N3E-A** — Delegate PLAY only when flag on, using N3D test WAVs (after unified native API exists).
+
+---
+
+*Document version: N3E — updated after N3E-C (2026-05-16).*
