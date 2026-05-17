@@ -50,6 +50,12 @@ void orpheus_n3c_shutdown(void);
 /** Phase N3D four-track WAV mixer (separate engine instance). */
 int32_t orpheus_n3d_init(void);
 int32_t orpheus_n3d_generate_and_load_test_tracks(const char* cache_dir);
+void orpheus_n3d_unload_all_tracks(void);
+int32_t orpheus_n3d_load_track(int32_t track_index,
+                               const char* path,
+                               int64_t tape_start_sample,
+                               int64_t record_latency_offset_samples);
+void orpheus_n3d_set_tape_length_samples(int64_t tape_length_samples);
 int32_t orpheus_n3d_open_streams(void);
 int32_t orpheus_n3d_start_mix(int64_t start_sample);
 void orpheus_n3d_stop_mix(void);

@@ -490,6 +490,40 @@ int32_t orpheus_n3d_generate_and_load_test_tracks(const char* cache_dir) {
     return 0;
 }
 
+void orpheus_n3d_unload_all_tracks(void) {
+    if (gMixerEngine) {
+        gMixerEngine->unloadAllTracks();
+    }
+}
+
+int32_t orpheus_n3d_load_track(const int32_t track_index,
+                               const char* path,
+                               const int64_t tape_start_sample,
+                               const int64_t record_latency_offset_samples) {
+    if (!gMixerEngine) {
+        setError("N3D engine not initialized");
+        return -1;
+    }
+    if (path == nullptr) {
+        setError("N3D null track path");
+        return -1;
+    }
+    if (!gMixerEngine->loadTrack(track_index,
+                                 std::string(path),
+                                 tape_start_sample,
+                                 record_latency_offset_samples)) {
+        setError(gMixerEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+void orpheus_n3d_set_tape_length_samples(const int64_t tape_length_samples) {
+    if (gMixerEngine) {
+        gMixerEngine->setTapeLengthSamples(tape_length_samples);
+    }
+}
+
 int32_t orpheus_n3d_open_streams(void) {
     if (!gMixerEngine) {
         setError("N3D engine not initialized");

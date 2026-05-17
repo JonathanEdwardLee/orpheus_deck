@@ -1,7 +1,7 @@
 # N3E — Hidden Native Recorder Mode Integration Plan
 
 **Branch:** `phase-n-native-audio`  
-**Status:** N3E-F complete — dev native test projects + session metadata; recorder audio unchanged  
+**Status:** N3E-G complete — native_test playback-only bridge (WAV); recording blocked in native mode  
 **Prerequisites (complete):** N1, N2 (N2B/N2D/N2E), N3B, N3C, N3C2, N3D  
 **Companion:** [N3_ARCHITECTURE.md](N3_ARCHITECTURE.md), [ORPHEUS_NATIVE_AUDIO_PLAN.md](ORPHEUS_NATIVE_AUDIO_PLAN.md), [ORPHEUS_DESIGN_MANIFESTO.md](ORPHEUS_DESIGN_MANIFESTO.md)
 
@@ -340,7 +340,8 @@ Use this before removing “experimental” or touching default engine:
 | N3E-D code | `experimentalNativeAudioEngineEnabled` in `settings.json` | **Done** — toggle only, no routing |
 | N3E-E code | `recorder_engine_selector.dart` eligibility guard | **Done** — selection only, no routing |
 | N3E-F code | `native_test` projects + `session.json` metadata | **Done** — eligibility only, no routing |
-| N3E-G+ code | native playback bridge for `native_test` projects | **Not started** |
+| N3E-G code | native playback bridge for `native_test` projects | **Done** |
+| N3E-H+ code | native one-track record bridge | **Not started** |
 | N3F | Session samples + M4A migration | Planned |
 | N4 | Sample-accurate export | Planned |
 
@@ -453,8 +454,31 @@ Use this before removing “experimental” or touching default engine:
 
 **Toast:** `NATIVE TEST PROJECT` on load (debug, `native_test` only).
 
-**Next step:** **N3E-G** — native playback-only bridge when `RecorderEngineSelection` is `nativeExperimental` (read flag + delegate PLAY only; WAV record path later).
+**Next step:** **N3E-H** — native one-track record bridge (WAV on disk, no M4A in native mode).
 
 ---
 
-*Document version: N3E — updated after N3E-F (2026-05-16).*
+## 15. N3E-G implemented
+
+**Scope:** Playback-only native bridge for `native_test` projects when experimental native toggle is ON and selector returns `nativeExperimental`.
+
+| Item | Detail |
+|------|--------|
+| Gate | Toggle ON + `kDebugMode` + Android + `audioEngine: native_test` + all non-null tracks `.wav` (no `.m4a`) |
+| M4A on disk | Forces legacy (`ENGINE: LEGACY - LEGACY M4A PROJECT`) |
+| Playback | `NativeOboeRecorderEngine` → N3D FFI (`load_track`, `start_mix`, transport poll) |
+| Sample clock | 48 kHz; UI `_playbackMs` from native `currentTransportSample` (Dart not audio clock) |
+| Tape length | 15 min (`tapeLengthMs`) via `orpheus_n3d_set_tape_length_samples` |
+| Recording | Blocked with toast `NATIVE RECORDING COMING NEXT` (no M4A until N3E-H) |
+| Test WAVs | Project MGMT → **GENERATE NATIVE TEST TRACKS** (debug, `native_test` only) |
+| Fallback | Native start failure → `NATIVE PLAYBACK FAILED - USING LEGACY` + legacy `_play` |
+| Legacy | Unchanged for normal projects; toggle OFF uses just_audio as before |
+| Dev screen | Native Audio Test (N3B–D) unchanged; mutual exclusion via `n3d_init` shutdown |
+
+**Files:** `lib/recorder/native_oboe_recorder_engine.dart`, `lib/recorder/native_test_wav_generator.dart`, C++ `orpheus_n3d_load_track` / `unload_all_tracks` / `set_tape_length_samples`, `lib/main.dart` `_play` / `_stop` / `_record` branches.
+
+**Mixer:** Mute/solo/volume applied before PLAY; live updates during native PLAY via `_updateMixerState` → `applyMixerState`.
+
+---
+
+*Document version: N3E — updated after N3E-G (2026-05-16).*

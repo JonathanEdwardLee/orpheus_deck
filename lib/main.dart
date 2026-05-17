@@ -29,6 +29,8 @@ import 'widgets/tape_reel_transport.dart';
 
 import 'orpheus_latency_calibration.dart';
 import 'native/orpheus_native_test_screen.dart';
+import 'recorder/native_oboe_recorder_engine.dart';
+import 'recorder/native_test_wav_generator.dart';
 import 'recorder/recorder_engine_selector.dart';
 
 /// One cassette side — fixed transport length (0 … tapeLengthMs).
@@ -2190,9 +2192,9 @@ class OrpheusConsole extends RecorderScreen {
 }
 
 class _RecorderScreenState extends State<RecorderScreen> {
-  // N3E-C seam (not wired): future field —
-  //   late OrpheusRecorderEngine _engine = createLegacyRecorderEngine();
-  // Transport/mixer still use just_audio + record directly until N3E-D/A.
+  /// N3E-G: native playback-only bridge when selector is nativeExperimental.
+  NativeOboeRecorderEngine? _nativeOboeEngine;
+  bool _nativePlaybackActive = false;
 
   bool _isPlaying = false;
   bool _isRecording = false;
@@ -2303,6 +2305,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
       _recorder.stop();
     }
     _recorder.dispose();
+    unawaited(_nativeOboeEngine?.dispose());
 
     _clickPlaybackSub?.cancel();
     _clickPlaybackSub = null;
@@ -4199,6 +4202,16 @@ class _RecorderScreenState extends State<RecorderScreen> {
                     Navigator.pop(context);
                     await _showExportsBrowseDialog();
                   }),
+                  if (kDebugMode &&
+                      isNativeTestAudioEngine(_projectAudioEngine)) ...[
+                    const SizedBox(height: 16),
+                    Container(height: 1, color: Colors.white24),
+                    const SizedBox(height: 16),
+                    _menuButton("GENERATE NATIVE TEST TRACKS", () {
+                      Navigator.pop(context);
+                      unawaited(_generateNativeTestTracks());
+                    }),
+                  ],
                   const SizedBox(height: 24),
                   _menuButton("EXIT TO MENU", () {
                     _stop();
@@ -4304,6 +4317,13 @@ class _RecorderScreenState extends State<RecorderScreen> {
   }
 
   void _updateMixerState() {
+    if (_nativePlaybackActive) {
+      _nativeOboeEngine?.applyMixerState(
+        volumes: _trackVolumes,
+        mutes: _trackMutes,
+        solos: _trackSolos,
+      );
+    }
     bool anySolo = _trackSolos.contains(true);
     for (int i = 0; i < 4; i++) {
       double targetVolume = 0.0;
@@ -4358,6 +4378,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
   void _startTicker() {
     _tickerTimer?.cancel();
     _tickerTimer = Timer.periodic(const Duration(milliseconds: 50), (Timer t) {
+      if (_nativePlaybackActive && _isPlaying) {
+        _pollNativePlaybackTransport(t);
+        return;
+      }
       if (_isPlaying) {
         final int maxMs = _tapeTransportMaxMs();
         final int nextMs = _playbackMs + 50;
@@ -4474,9 +4498,95 @@ class _RecorderScreenState extends State<RecorderScreen> {
     return [];
   }
 
+  bool _shouldAttemptNativePlayback() {
+    if (!kDebugMode || !Platform.isAndroid) return false;
+    final sel = _recorderEngineSelection();
+    if (sel.selectedKind != OrpheusAudioEngineKind.nativeExperimental) {
+      return false;
+    }
+    if (!isNativeTestAudioEngine(_projectAudioEngine)) return false;
+    if (!projectNonNullTracksAreWav(_trackFiles)) return false;
+    return projectHasAtLeastOneWavTrack(_trackFiles);
+  }
+
+  Future<void> _stopNativePlaybackOnly() async {
+    if (_nativeOboeEngine != null) {
+      await _nativeOboeEngine!.stop();
+    }
+    _nativePlaybackActive = false;
+  }
+
+  void _pollNativePlaybackTransport(Timer t) {
+    final engine = _nativeOboeEngine;
+    if (engine == null || !engine.sessionOpen) {
+      return;
+    }
+    final int sample = engine.currentTransportSample;
+    final int ms = orpheusNativeSamplesToMs(sample);
+    final int maxMs = _tapeTransportMaxMs();
+    final int clampedMs = ms.clamp(0, maxMs);
+    if (engine.isPlaybackComplete || clampedMs >= maxMs) {
+      setState(() => _applyTapeHeadClamped(clampedMs));
+      scheduleMicrotask(() async {
+        await _stop(
+          transportStopReason: engine.isPlaybackComplete
+              ? 'NATIVE_PLAYBACK_COMPLETE'
+              : 'TAPE_END',
+        );
+      });
+      return;
+    }
+    setState(() => _applyTapeHeadClamped(clampedMs));
+  }
+
+  Future<bool> _tryStartNativePlayback() async {
+    final int startMs = _playbackMs.clamp(0, tapeLengthMs);
+    final int startSample = orpheusMsToNativeSamples(startMs);
+    try {
+      for (final p in _trackPlayers) {
+        await p.stop();
+      }
+      _nativeOboeEngine ??= NativeOboeRecorderEngine();
+      await _nativeOboeEngine!.preparePlayback(
+        trackPaths: _trackFiles,
+        trackTapeStartMs: _trackTapeStartMs,
+        recordLatencyOffsetMs: _trackOffsets,
+        tapeLengthMs: tapeLengthMs,
+        volumes: _trackVolumes,
+        mutes: _trackMutes,
+        solos: _trackSolos,
+      );
+      await _nativeOboeEngine!.startPlayback(startSample: startSample);
+      if (!mounted) return false;
+      setState(() {
+        _isPlaying = true;
+        _nativePlaybackActive = true;
+        _applyTapeHeadClamped(startMs);
+      });
+      _showSnackbar('NATIVE PLAYBACK');
+      _startTicker();
+      debugPrint(
+        'Orpheus N3E-G: PLAY_NATIVE startMs=$startMs startSample=$startSample',
+      );
+      return true;
+    } catch (e, st) {
+      debugPrint('Orpheus N3E-G: native playback failed: $e\n$st');
+      await _stopNativePlaybackOnly();
+      if (mounted) {
+        _showSnackbar('NATIVE PLAYBACK FAILED - USING LEGACY');
+      }
+      return false;
+    }
+  }
+
   Future<void> _play() async {
     if (_isRecording || _isExporting) return;
     if (_isPlaying) return;
+
+    if (_shouldAttemptNativePlayback()) {
+      final bool nativeOk = await _tryStartNativePlayback();
+      if (nativeOk) return;
+    }
 
     final int startMs = _playbackMs.clamp(0, tapeLengthMs);
 
@@ -4796,6 +4906,12 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
   Future<void> _record({bool skipRecordingCheckReminder = false}) async {
     if (_isRecording || _isExporting) return;
+
+    if (_recorderEngineSelection().selectedKind ==
+        OrpheusAudioEngineKind.nativeExperimental) {
+      _showSnackbar('NATIVE RECORDING COMING NEXT');
+      return;
+    }
 
     int armedCount = _armedTracks.where((isArmed) => isArmed).length;
     if (armedCount != 1) {
@@ -5144,6 +5260,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
       _liveAmplitudes.clear();
     }
 
+    if (_nativePlaybackActive) {
+      await _stopNativePlaybackOnly();
+    }
+
     for (var player in _trackPlayers) {
       await player.stop();
     }
@@ -5158,6 +5278,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
     setState(() {
       _isPlaying = false;
       _isRecording = false;
+      _nativePlaybackActive = false;
     });
 
     if (recordedSomething) {
@@ -5184,6 +5305,67 @@ class _RecorderScreenState extends State<RecorderScreen> {
     setState(() {
       _armedTracks[index] = !_armedTracks[index];
     });
+  }
+
+  /// Debug-only: populate native_test project with 4 staggered WAV click tracks.
+  Future<void> _generateNativeTestTracks() async {
+    if (!kDebugMode) return;
+    if (!isNativeTestAudioEngine(_projectAudioEngine)) {
+      _showSnackbar('ERR: NATIVE TEST PROJECT ONLY');
+      return;
+    }
+    if (_isPlaying || _isRecording || _isExporting) {
+      _showSnackbar('ERR: STOP TRANSPORT FIRST');
+      return;
+    }
+
+    try {
+      await _stopNativePlaybackOnly();
+      final dir = await getApplicationDocumentsDirectory();
+      final projDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
+      if (!await projDir.exists()) {
+        await projDir.create(recursive: true);
+      }
+
+      for (int i = 0; i < 4; i++) {
+        final old = _trackFiles[i];
+        if (old != null) {
+          final f = File(old);
+          if (f.existsSync()) {
+            await f.delete();
+          }
+          _waveformCache.remove(old);
+        }
+      }
+
+      const tapeStartsMs = [0, 1000, 2000, 3000];
+      final newPaths = <String>[];
+
+      for (int i = 0; i < 4; i++) {
+        final path = '${projDir.path}/native_test_trk$i.wav';
+        await writeNativeTestTrackWav(path: path, trackIndex: i);
+        newPaths.add(path);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        for (int i = 0; i < 4; i++) {
+          _trackFiles[i] = newPaths[i];
+          _trackTapeStartMs[i] = tapeStartsMs[i];
+          _trackOffsets[i] = 0;
+          _armedTracks[i] = false;
+          _waveformCache[newPaths[i]] =
+              nativeTestTrackWaveformPlaceholder(i);
+        }
+        _projectAudioEngine = kOrpheusAudioEngineNativeTest;
+      });
+      await _saveSession();
+      _showSnackbar('NATIVE TEST TRACKS READY');
+      debugPrint('Orpheus N3E-G: generated 4 native test WAV tracks');
+    } catch (e, st) {
+      debugPrint('Orpheus N3E-G: generate native test tracks failed: $e\n$st');
+      _showSnackbar('ERR: NATIVE TEST TRACK GEN FAILED');
+    }
   }
 
   Future<void> _clearTrack(int index) async {

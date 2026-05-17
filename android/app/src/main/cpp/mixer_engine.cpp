@@ -141,6 +141,36 @@ bool MixerEngine::generateAndLoadTestTracks(const std::string& cacheDir) {
     return loadedCount == kN3dTrackCount;
 }
 
+void MixerEngine::unloadAllTracks() {
+    for (int32_t i = 0; i < kN3dTrackCount; ++i) {
+        TrackSlot& slot = tracks_[i];
+        slot.pcm.clear();
+        slot.pcmData = nullptr;
+        slot.frameCount = 0;
+        slot.loaded.store(0, std::memory_order_relaxed);
+        slot.tapeStartSample.store(0, std::memory_order_relaxed);
+        slot.recordLatencyOffsetSamples.store(0, std::memory_order_relaxed);
+        slot.effectiveTapeStartSample.store(0, std::memory_order_relaxed);
+        slot.framesMixed.store(0, std::memory_order_relaxed);
+    }
+    ORPHEUS_LOGI("N3D all tracks unloaded");
+}
+
+bool MixerEngine::loadTrack(const int32_t trackIndex,
+                            const std::string& path,
+                            const int64_t tapeStartSample,
+                            const int64_t recordLatencyOffsetSamples) {
+    return loadTrackFromPath(trackIndex, path, tapeStartSample, recordLatencyOffsetSamples);
+}
+
+void MixerEngine::setTapeLengthSamples(const int64_t tapeLengthSamples) {
+    const int64_t len =
+        tapeLengthSamples > 0 ? tapeLengthSamples : kN3dTapeLengthSamples;
+    tapeLengthSamples_.store(len, std::memory_order_relaxed);
+    transportStopSample_.store(len, std::memory_order_relaxed);
+    ORPHEUS_LOGI("N3D tape length samples=%lld", static_cast<long long>(len));
+}
+
 void MixerEngine::closeOutputStream() {
     isPlaying_.store(0, std::memory_order_release);
     if (outputStream_) {
@@ -204,8 +234,8 @@ bool MixerEngine::openStreams() {
     sharedFallbackUsed_.store(0, std::memory_order_relaxed);
     lastOpenErrorCode_.store(0, std::memory_order_relaxed);
 
-    if (countTracksLoaded() < kN3dTrackCount) {
-        lastError_ = "load test tracks before openStreams";
+    if (countTracksLoaded() < 1) {
+        lastError_ = "load at least one track before openStreams";
         return false;
     }
 
@@ -226,8 +256,8 @@ bool MixerEngine::startMix(const int64_t startSample) {
         lastError_ = "output stream not open";
         return false;
     }
-    if (countTracksLoaded() < kN3dTrackCount) {
-        lastError_ = "not all tracks loaded";
+    if (countTracksLoaded() < 1) {
+        lastError_ = "no tracks loaded";
         return false;
     }
 

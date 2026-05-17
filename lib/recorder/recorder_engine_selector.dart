@@ -116,11 +116,31 @@ RecorderEngineSelection selectRecorderEngine({
   );
 }
 
+/// True when every non-null track path is `.wav` (null slots allowed).
+bool projectNonNullTracksAreWav(List<String?> trackPaths) {
+  for (final path in trackPaths) {
+    if (path == null) continue;
+    if (!path.toLowerCase().endsWith('.wav')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool projectHasAtLeastOneWavTrack(List<String?> trackPaths) {
+  for (final path in trackPaths) {
+    if (path != null && path.toLowerCase().endsWith('.wav')) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Debug deck header line (kDebugMode only).
 String formatRecorderEngineDebugLine(RecorderEngineSelection selection) {
   switch (selection.selectedKind) {
     case OrpheusAudioEngineKind.nativeExperimental:
-      return 'ENGINE: NATIVE EXPERIMENTAL SELECTED - NOT WIRED';
+      return 'ENGINE: NATIVE EXPERIMENTAL SELECTED';
     case OrpheusAudioEngineKind.legacy:
       switch (selection.reason) {
         case 'LEGACY M4A PROJECT':

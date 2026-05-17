@@ -40,6 +40,12 @@ public:
     bool init();
     /** Generate 4 test WAVs under [dir]/orpheus_n3d_trk{0..3}.wav and load them. */
     bool generateAndLoadTestTracks(const std::string& cacheDir);
+    void unloadAllTracks();
+    bool loadTrack(int32_t trackIndex,
+                   const std::string& path,
+                   int64_t tapeStartSample,
+                   int64_t recordLatencyOffsetSamples);
+    void setTapeLengthSamples(int64_t tapeLengthSamples);
     bool openStreams();
     bool startMix(int64_t startSample);
     void stopMix();

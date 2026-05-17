@@ -375,6 +375,32 @@ class OrpheusNativeBindings {
           )
           .asFunction();
 
+  late final void Function() n3dUnloadAllTracks = lib
+      .lookup<NativeFunction<Void Function()>>('orpheus_n3d_unload_all_tracks')
+      .asFunction();
+
+  late final int Function(
+    int trackIndex,
+    Pointer<Utf8> path,
+    int tapeStartSample,
+    int recordLatencyOffsetSamples,
+  ) n3dLoadTrack = lib
+      .lookup<
+          NativeFunction<
+              Int32 Function(
+                Int32 trackIndex,
+                Pointer<Utf8> path,
+                Int64 tapeStartSample,
+                Int64 recordLatencyOffsetSamples,
+              )>>('orpheus_n3d_load_track')
+      .asFunction();
+
+  late final void Function(int tapeLengthSamples) n3dSetTapeLengthSamples = lib
+      .lookup<NativeFunction<Void Function(Int64 tapeLengthSamples)>>(
+        'orpheus_n3d_set_tape_length_samples',
+      )
+      .asFunction();
+
   late final int Function() n3dOpenStreams = lib
       .lookup<NativeFunction<Int32 Function()>>('orpheus_n3d_open_streams')
       .asFunction();
