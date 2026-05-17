@@ -47,6 +47,21 @@ int32_t orpheus_n3c_is_complete(void);
 void orpheus_n3c_get_diagnostics(OrpheusN3OverdubDiagnostics* out);
 void orpheus_n3c_shutdown(void);
 
+/** Phase N3D four-track WAV mixer (separate engine instance). */
+int32_t orpheus_n3d_init(void);
+int32_t orpheus_n3d_generate_and_load_test_tracks(const char* cache_dir);
+int32_t orpheus_n3d_open_streams(void);
+int32_t orpheus_n3d_start_mix(int64_t start_sample);
+void orpheus_n3d_stop_mix(void);
+void orpheus_n3d_reset_mixer(void);
+int32_t orpheus_n3d_set_track_gain(int32_t track_index, float gain);
+int32_t orpheus_n3d_set_track_mute(int32_t track_index, int32_t muted);
+int32_t orpheus_n3d_set_track_solo(int32_t track_index, int32_t solo);
+int64_t orpheus_n3d_get_transport_sample(void);
+int32_t orpheus_n3d_is_playback_complete(void);
+void orpheus_n3d_get_diagnostics(OrpheusN3MixerDiagnostics* out);
+void orpheus_n3d_shutdown(void);
+
 const char* orpheus_native_last_error(void);
 
 #ifdef __cplusplus

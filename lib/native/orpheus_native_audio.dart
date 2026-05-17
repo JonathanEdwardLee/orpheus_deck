@@ -11,6 +11,7 @@ import 'orpheus_native_labels.dart';
 import 'orpheus_native_latency_profile.dart';
 import 'orpheus_native_n3_bindings.dart';
 import 'orpheus_native_n3c_bindings.dart';
+import 'orpheus_native_n3d_bindings.dart';
 
 /// Phase N1 — Oboe handshake orchestration (no main recorder integration).
 class OrpheusNativeAudio {
@@ -27,6 +28,7 @@ class OrpheusNativeAudio {
   String? _n3cBackingPath;
   String? _lastN3cRecordPath;
   bool _n3cSessionOpen = false;
+  bool _n3dSessionOpen = false;
   int? _lastN2eRecommendedOffsetSamples;
 
   /// Dev-only fallback when N2E profile is not in memory (not production settings).
@@ -216,6 +218,7 @@ class OrpheusNativeAudio {
     if (_n3SessionOpen && _n3WavPath != null) {
       return _n3WavPath!;
     }
+    await stopN3d();
     final b = bindings;
     _check(b.n3Init(), b);
 
@@ -293,6 +296,7 @@ class OrpheusNativeAudio {
     void Function(OrpheusN3OverdubDiagnosticsData diag)? onTransportTick,
   }) async {
     await ensureMicPermission();
+    await stopN3d();
     await stopN3b();
     await stopN3c();
 
@@ -369,5 +373,97 @@ class OrpheusNativeAudio {
       _bindings = null;
     }
     debugPrint('Orpheus N3C: session stopped');
+  }
+
+  OrpheusN3MixerDiagnosticsData readN3dDiagnostics() =>
+      bindings.readN3dDiagnostics();
+
+  /// Phase N3D — four-track in-memory WAV mixer (dev only).
+  Future<OrpheusN3MixerDiagnosticsData> ensureN3dSession() async {
+    if (_n3dSessionOpen) {
+      return bindings.readN3dDiagnostics();
+    }
+    await stopN3b();
+    await stopN3c();
+
+    final b = bindings;
+    _check(b.n3dInit(), b);
+
+    final dir = await getTemporaryDirectory();
+    final dirPtr = dir.path.toNativeUtf8();
+    try {
+      _check(b.n3dGenerateAndLoadTestTracks(dirPtr), b);
+    } finally {
+      malloc.free(dirPtr);
+    }
+    _check(b.n3dOpenStreams(), b);
+
+    _n3dSessionOpen = true;
+    debugPrint('Orpheus N3D: session ready cache=${dir.path}');
+    return b.readN3dDiagnostics();
+  }
+
+  Future<OrpheusN3MixerDiagnosticsData> runN3dMixer({
+    int startSample = 0,
+    Duration timeout = const Duration(seconds: 14),
+    void Function(OrpheusN3MixerDiagnosticsData diag)? onTransportTick,
+  }) async {
+    final b = bindings;
+    await ensureN3dSession();
+    b.n3dStopMix();
+    _check(b.n3dStartMix(startSample), b);
+
+    final deadline = DateTime.now().add(timeout);
+    OrpheusN3MixerDiagnosticsData diag = b.readN3dDiagnostics();
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      diag = b.readN3dDiagnostics();
+      onTransportTick?.call(diag);
+      if (b.n3dIsPlaybackComplete() == 1) {
+        break;
+      }
+      if (diag.isPlaying == 0 &&
+          diag.currentTransportSample >= diag.transportStopSample) {
+        break;
+      }
+    }
+
+    debugPrint(
+      'Orpheus N3D: mix done transport=${diag.currentTransportSample} '
+      'xruns=${diag.xRunCount} complete=${diag.playbackComplete}',
+    );
+    return diag;
+  }
+
+  Future<void> stopN3d() async {
+    if (!_n3dSessionOpen && _bindings == null) {
+      return;
+    }
+    final b = _bindings ?? OrpheusNativeBindings.instance;
+    b.n3dStopMix();
+    b.n3dShutdown();
+    _n3dSessionOpen = false;
+    if (_bindings != null) {
+      _bindings = null;
+    }
+    debugPrint('Orpheus N3D: session stopped');
+  }
+
+  void n3dResetMixer() {
+    if (_n3dSessionOpen) {
+      bindings.n3dResetMixer();
+    }
+  }
+
+  void n3dSetTrackMute(int trackIndex, bool muted) {
+    if (_n3dSessionOpen) {
+      _check(bindings.n3dSetTrackMute(trackIndex, muted ? 1 : 0), bindings);
+    }
+  }
+
+  void n3dSetTrackSolo(int trackIndex, bool solo) {
+    if (_n3dSessionOpen) {
+      _check(bindings.n3dSetTrackSolo(trackIndex, solo ? 1 : 0), bindings);
+    }
   }
 }

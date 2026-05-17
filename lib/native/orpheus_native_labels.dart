@@ -3,6 +3,7 @@ import 'orpheus_native_duplex_bindings.dart';
 import 'orpheus_native_latency_profile.dart';
 import 'orpheus_native_n3_bindings.dart';
 import 'orpheus_native_n3c_bindings.dart';
+import 'orpheus_native_n3d_bindings.dart';
 
 /// Oboe 1.10 enum labels (see oboe/Definitions.h).
 class OrpheusNativeLabels {
@@ -347,6 +348,60 @@ class OrpheusNativeLabels {
         '${sharingMode(d.sharingMode)}\n'
         'BURST / BUFFER: ${d.framesPerBurst} / ${d.bufferSizeInFrames}\n'
         'OUTPUT CALLBACKS: ${d.outputCallbackCount}';
+  }
+
+  static String formatN3dMixer(OrpheusN3MixerDiagnosticsData d) {
+    if (!d.diagnosticsPlausible) {
+      return 'N3D FOUR-TRACK MIXER\n'
+          'N3D DIAGNOSTICS INVALID\n'
+          '(check @Packed(8) FFI layout)\n'
+          'RAW transport=${d.currentTransportSample} loaded=${d.tracksLoaded}';
+    }
+    final trackLines = StringBuffer();
+    for (var i = 0; i < 4; i++) {
+      final start = d.trackStartSamples[i];
+      final eff = d.trackEffectiveStartSamples[i];
+      final mixed = d.trackFramesMixed[i];
+      final gain = [
+        d.track0GainTimes1000,
+        d.track1GainTimes1000,
+        d.track2GainTimes1000,
+        d.track3GainTimes1000,
+      ][i];
+      final muted = [
+        d.track0Muted,
+        d.track1Muted,
+        d.track2Muted,
+        d.track3Muted,
+      ][i];
+      final solo = [
+        d.track0Solo,
+        d.track1Solo,
+        d.track2Solo,
+        d.track3Solo,
+      ][i];
+      trackLines.writeln(
+        'TRK $i: tapeStart=$start effective=$eff mixed=$mixed '
+        'gain=${(gain / 1000.0).toStringAsFixed(2)} '
+        'mute=${muted == 1 ? 'Y' : 'N'} solo=${solo == 1 ? 'Y' : 'N'}',
+      );
+    }
+    return 'N3D FOUR-TRACK MIXER\n'
+        'TRACKS LOADED: ${d.tracksLoaded} / 4\n'
+        'TRACKS ACTIVE NOW: ${d.tracksActive}\n'
+        'SOLO ACTIVE: ${d.soloActive == 1 ? 'YES' : 'NO'}\n'
+        'TRANSPORT: ${d.currentTransportSample} / ${d.transportStopSample} '
+        '(${d.transportSeconds.toStringAsFixed(2)} s)\n'
+        'START: ${d.transportStartSample}\n'
+        'PLAYING: ${d.isPlaying == 1 ? 'YES' : 'NO'}\n'
+        'COMPLETE: ${d.playbackComplete == 1 ? 'YES' : 'NO'}\n'
+        'XRUNS: ${d.xRunCount}\n'
+        'API: ${apiUsed(d.apiUsed)} | ${performanceMode(d.performanceMode)} | '
+        '${sharingMode(d.sharingMode)}\n'
+        'BURST / BUFFER: ${d.framesPerBurst} / ${d.bufferSizeInFrames}\n'
+        'OUTPUT CALLBACKS: ${d.outputCallbackCount}\n'
+        '$trackLines'
+        'effectiveTapeStart = tapeStart - recordLatencyOffset';
   }
 
   static String copyRecommendedOffsetLine(OrpheusLatencyProfileResult p) {
