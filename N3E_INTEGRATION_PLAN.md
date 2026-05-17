@@ -1,7 +1,7 @@
 # N3E — Hidden Native Recorder Mode Integration Plan
 
 **Branch:** `phase-n-native-audio`  
-**Status:** N3E-C complete — abstraction in `lib/recorder/`; recorder behavior unchanged  
+**Status:** N3E-D complete — hidden toggle in `settings.json`; recorder behavior unchanged  
 **Prerequisites (complete):** N1, N2 (N2B/N2D/N2E), N3B, N3C, N3C2, N3D  
 **Companion:** [N3_ARCHITECTURE.md](N3_ARCHITECTURE.md), [ORPHEUS_NATIVE_AUDIO_PLAN.md](ORPHEUS_NATIVE_AUDIO_PLAN.md), [ORPHEUS_DESIGN_MANIFESTO.md](ORPHEUS_DESIGN_MANIFESTO.md)
 
@@ -337,7 +337,8 @@ Use this before removing “experimental” or touching default engine:
 | N3A–D | [N3_ARCHITECTURE.md](N3_ARCHITECTURE.md) | Done |
 | **N3E plan** | **This file** | **This document** |
 | N3E-C code | `lib/recorder/*` abstraction + legacy placeholder | **Done** — no UI delegation yet |
-| N3E-D+ code | settings gate, native engine, `orpheus_n3e_*` | **Not started** |
+| N3E-D code | `experimentalNativeAudioEngineEnabled` in `settings.json` | **Done** — toggle only, no routing |
+| N3E-A+ code | delegate transport, `orpheus_n3e_*` | **Not started** |
 | N3F | Session samples + M4A migration | Planned |
 | N4 | Sample-accurate export | Planned |
 
@@ -369,4 +370,29 @@ Use this before removing “experimental” or touching default engine:
 
 ---
 
-*Document version: N3E — updated after N3E-C (2026-05-16).*
+## 12. N3E-D implemented
+
+**Scope:** Hidden experimental native engine **toggle scaffolding** only — **no recorder routing**.
+
+| Item | Detail |
+|------|--------|
+| Setting key | `experimentalNativeAudioEngineEnabled` in `Documents/OrpheusDeck/settings.json` |
+| Default | `false` (missing/invalid JSON → false) |
+| Not in | `session.json` (per-project) |
+| UI | Settings dialog → **EXPERIMENTAL (DEBUG)** section, visible when `kDebugMode` only |
+| Label | **USE NATIVE AUDIO ENGINE (EXPERIMENTAL)** |
+| Transport guard | Uses existing `isTransportBusy` callback; toast **STOP PLAY/REC FIRST** |
+| On enable toast | **EXPERIMENTAL. NOT USED BY MAIN RECORDER YET.** |
+| On disable toast | **LEGACY ENGINE ACTIVE** |
+| Recorder hint | Debug-only line under deck header (`ENGINE: LEGACY` / `…NOT WIRED`) |
+| Native Audio Test | Unchanged — long-press About (debug Android) |
+
+**Behavior:** Toggle persists across app restarts. `_play` / `_record` / `_stop` and `just_audio` are **unchanged**. Setting is **not read** by transport code yet.
+
+**Access:** Home **SETTINGS**, or **OPEN SETTINGS** from pre-record reminder while on recorder (passes transport-busy check).
+
+**Next recommended step:** **N3E-A** — when unified native API exists, read this flag and delegate PLAY only with N3D test WAVs; or continue with `OrpheusRecorderEngine` wiring behind the same flag.
+
+---
+
+*Document version: N3E — updated after N3E-D (2026-05-16).*
