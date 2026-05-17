@@ -1,7 +1,7 @@
 # N3E — Hidden Native Recorder Mode Integration Plan
 
 **Branch:** `phase-n-native-audio`  
-**Status:** N3E-D complete — hidden toggle in `settings.json`; recorder behavior unchanged  
+**Status:** N3E-E complete — engine selector + eligibility guard; recorder behavior unchanged  
 **Prerequisites (complete):** N1, N2 (N2B/N2D/N2E), N3B, N3C, N3C2, N3D  
 **Companion:** [N3_ARCHITECTURE.md](N3_ARCHITECTURE.md), [ORPHEUS_NATIVE_AUDIO_PLAN.md](ORPHEUS_NATIVE_AUDIO_PLAN.md), [ORPHEUS_DESIGN_MANIFESTO.md](ORPHEUS_DESIGN_MANIFESTO.md)
 
@@ -338,6 +338,7 @@ Use this before removing “experimental” or touching default engine:
 | **N3E plan** | **This file** | **This document** |
 | N3E-C code | `lib/recorder/*` abstraction + legacy placeholder | **Done** — no UI delegation yet |
 | N3E-D code | `experimentalNativeAudioEngineEnabled` in `settings.json` | **Done** — toggle only, no routing |
+| N3E-E code | `recorder_engine_selector.dart` eligibility guard | **Done** — selection only, no routing |
 | N3E-A+ code | delegate transport, `orpheus_n3e_*` | **Not started** |
 | N3F | Session samples + M4A migration | Planned |
 | N4 | Sample-accurate export | Planned |
@@ -395,4 +396,33 @@ Use this before removing “experimental” or touching default engine:
 
 ---
 
-*Document version: N3E — updated after N3E-D (2026-05-16).*
+## 13. N3E-E implemented
+
+**Scope:** Pure-Dart **engine selection guard** — decides what *would* run; does **not** change audio.
+
+| Deliverable | Location |
+|-------------|----------|
+| `OrpheusAudioEngineKind` | `lib/recorder/recorder_engine_selector.dart` |
+| `RecorderEngineSelection` | same |
+| `selectRecorderEngine(...)` | same |
+| `formatRecorderEngineDebugLine` | same |
+| `kOrpheusDevNativeProjectEligibleOverride` | `false` in repo — dev-only simulation |
+
+**Selector rules (in order):**
+
+1. `experimentalNativeAudioEngineEnabled == false` → **legacy**
+2. `!isDebugBuild` → **legacy** (toggle hidden in release)
+3. `!platformIsAndroid` → **legacy**
+4. `projectHasLegacyM4aTracks` → **legacy**, reason `LEGACY M4A PROJECT`
+5. `!projectIsNativeEligible` → **legacy**, reason `NATIVE TEST PROJECT REQUIRED`
+6. All gates pass → **nativeExperimental** (still not wired to Oboe)
+
+**Eligibility today:** `projectIsNativeEligible` is always `false` via `kOrpheusDevNativeProjectEligibleOverride` — real projects cannot select native yet. No `audioEngine` in `session.json`.
+
+**Debug header:** Uses selection result (`ENGINE: LEGACY`, `ENGINE: LEGACY - …`, or `ENGINE: NATIVE EXPERIMENTAL SELECTED - NOT WIRED`).
+
+**Next step:** **N3E-A** — read `RecorderEngineSelection` when delegating transport; or enable eligibility only for explicit dev native test projects (N3F).
+
+---
+
+*Document version: N3E — updated after N3E-E (2026-05-16).*

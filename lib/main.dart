@@ -29,6 +29,7 @@ import 'widgets/tape_reel_transport.dart';
 
 import 'orpheus_latency_calibration.dart';
 import 'native/orpheus_native_test_screen.dart';
+import 'recorder/recorder_engine_selector.dart';
 
 /// One cassette side — fixed transport length (0 … tapeLengthMs).
 /// Clip lengths do not shorten the tape; matches ORPHEUS_DESIGN_MANIFESTO.md.
@@ -149,12 +150,6 @@ class OrpheusSettings {
 
   /// N3E-D: persisted preference only — main recorder still uses legacy audio.
   bool experimentalNativeAudioEngineEnabled = false;
-
-  /// Debug-only deck header line (N3E-D).
-  String get engineDebugIndicatorLabel =>
-      experimentalNativeAudioEngineEnabled
-          ? 'ENGINE: NATIVE EXPERIMENTAL SELECTED - NOT WIRED'
-          : 'ENGINE: LEGACY';
 
   Future<File> _settingsFile() async {
     final dir = await getApplicationDocumentsDirectory();
@@ -4322,6 +4317,29 @@ class _RecorderScreenState extends State<RecorderScreen> {
     return "IDLE";
   }
 
+  bool _projectHasLegacyM4aTracks() {
+    for (final path in _trackFiles) {
+      if (path != null && path.toLowerCase().endsWith('.m4a')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  RecorderEngineSelection _recorderEngineSelection() {
+    return selectRecorderEngine(
+      experimentalNativeAudioEngineEnabled:
+          OrpheusSettings.instance.experimentalNativeAudioEngineEnabled,
+      isDebugBuild: kDebugMode,
+      projectIsNativeEligible: kOrpheusDevNativeProjectEligibleOverride,
+      projectHasLegacyM4aTracks: _projectHasLegacyM4aTracks(),
+      platformIsAndroid: Platform.isAndroid,
+    );
+  }
+
+  String _recorderEngineDebugLine() =>
+      formatRecorderEngineDebugLine(_recorderEngineSelection());
+
   List<double> _getAmplitudesForTrack(int index) {
     if (_isRecording && _armedTracks[index]) {
       return _liveAmplitudes;
@@ -5130,9 +5148,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
                 onProjectTap: _showProjectMenu,
                 hasUndo: _lastUndo.hasUndo,
                 onUndo: _performUndo,
-                debugEngineLine: kDebugMode
-                    ? OrpheusSettings.instance.engineDebugIndicatorLabel
-                    : null,
+                debugEngineLine:
+                    kDebugMode ? _recorderEngineDebugLine() : null,
               ),
               const SizedBox(height: 12),
               Expanded(
