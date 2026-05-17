@@ -451,7 +451,11 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
           child: Text(
             OrpheusNativeLabels.formatN3cOverdub(d),
             style: _mono.copyWith(
-              color: d.wavWriteSuccess == 1 ? Colors.greenAccent : Colors.orangeAccent,
+              color: d.profileCompensationResult == 2
+                  ? Colors.greenAccent
+                  : (d.profileCompensationResult == 1
+                      ? Colors.lightGreenAccent
+                      : Colors.orangeAccent),
               fontWeight: FontWeight.bold,
               height: 1.45,
             ),
@@ -951,8 +955,12 @@ class _OrpheusNativeTestScreenState extends State<OrpheusNativeTestScreen> {
         'recordedFramesWritten=${d.recordedFramesWritten}\n'
         'wavWriteSuccess=${d.wavWriteSuccess}\n'
         'xRunCount=${d.xRunCount}\n'
-        'medianOffsetSamples=${d.medianOffsetSamples}\n'
-        'compensatedMedianResidualSamples=${d.compensatedMedianResidualSamples}';
+        'measuredMedianOffsetSamples=${d.measuredMedianOffsetSamples}\n'
+        'defaultRecordLatencyOffsetSamples=${d.defaultRecordLatencyOffsetSamples}\n'
+        'profileResidualSamples=${d.profileResidualSamples}\n'
+        'measuredSelfResidualSamples=${d.measuredSelfResidualSamples}\n'
+        'expectedRecordedFrames=${d.expectedRecordedFrames}\n'
+        'profileCompensationResult=${d.profileCompensationResult}';
   }
 }
 

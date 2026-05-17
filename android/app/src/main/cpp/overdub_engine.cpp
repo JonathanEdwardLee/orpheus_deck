@@ -446,13 +446,19 @@ void OverdubEngine::runTimingAnalysis(const std::vector<float>& recordedSamples)
                                                clicksExpected,
                                                kTimingSearchWindowSamples);
 
+    const int64_t profileOffset =
+        defaultRecordLatencyOffsetSamples_.load(std::memory_order_relaxed);
+    const int64_t profileResidual = timingResult_.medianOffsetSamples - profileOffset;
+
     ORPHEUS_LOGI(
-        "N3C timing: expected=%d detected=%d median=%lld residual=%lld pass=%d",
+        "N3C timing: expected=%d detected=%d measured=%lld profile=%lld "
+        "profileResidual=%lld selfResidual=%lld",
         timingResult_.clicksExpected,
         timingResult_.clicksDetected,
         static_cast<long long>(timingResult_.medianOffsetSamples),
-        static_cast<long long>(timingResult_.compensatedMedianResidualSamples),
-        timingResult_.compensatedAlignmentSuccess);
+        static_cast<long long>(profileOffset),
+        static_cast<long long>(profileResidual),
+        static_cast<long long>(timingResult_.compensatedMedianResidualSamples));
 }
 
 void OverdubEngine::recordWorkerLoop() {
@@ -506,9 +512,26 @@ void OverdubEngine::fillDiagnostics(OrpheusN3OverdubDiagnostics* out) const {
     out->transportStopSample = transportStopSample_.load(std::memory_order_relaxed);
     out->outputCallbackCount = outputCallbackCount_.load(std::memory_order_relaxed);
     out->inputCallbackCount = inputCallbackCount_.load(std::memory_order_relaxed);
-    out->medianOffsetSamples = timingResult_.medianOffsetSamples;
-    out->compensatedMedianResidualSamples =
+
+    const int32_t rate = out->sampleRate > 0 ? out->sampleRate : kN3cSampleRate;
+    const int64_t measuredMedian = timingResult_.medianOffsetSamples;
+    const int64_t profileOffset = out->defaultRecordLatencyOffsetSamples;
+    const int64_t profileResidual = measuredMedian - profileOffset;
+
+    out->measuredMedianOffsetSamples = measuredMedian;
+    out->measuredSelfResidualSamples =
         timingResult_.compensatedMedianResidualSamples;
+    out->profileResidualSamples = profileResidual;
+    out->profileResidualMsTimes1000 = static_cast<int32_t>(
+        (profileResidual * 1000000LL) / static_cast<int64_t>(rate));
+
+    const int64_t expectedRecorded =
+        out->transportStopSample - out->recordStartSample;
+    out->expectedRecordedFrames = expectedRecorded > 0 ? expectedRecorded : 0;
+    const int64_t frameDelta =
+        std::llabs(out->recordedFramesWritten - out->expectedRecordedFrames);
+    out->recordedFramesSanity =
+        frameDelta <= kN3cRecordedFramesSanitySamples ? 1 : 0;
 
     if (outputStream_ || inputStream_) {
         out->framesPerBurst = outputStream_
@@ -529,6 +552,21 @@ void OverdubEngine::fillDiagnostics(OrpheusN3OverdubDiagnostics* out) const {
             out->sharingMode = oboeSharingToInt(inputStream_->getSharingMode());
         }
     }
+
+    int32_t profileResult = 0;
+    const int32_t minClicks =
+        std::max(0, timingResult_.clicksExpected - 1);
+    if (out->xRunCount == 0 && out->recordSuccess == 1 && out->wavWriteSuccess == 1 &&
+        timingResult_.analysisSuccess == 1 &&
+        timingResult_.clicksDetected >= minClicks) {
+        const int64_t absResidual = std::llabs(profileResidual);
+        if (absResidual <= kN3cProfilePassMaxResidualSamples) {
+            profileResult = 2;
+        } else if (absResidual <= kN3cProfileOkMaxResidualSamples) {
+            profileResult = 1;
+        }
+    }
+    out->profileCompensationResult = profileResult;
 }
 
 void OverdubEngine::shutdown() {

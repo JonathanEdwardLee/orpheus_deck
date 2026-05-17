@@ -164,6 +164,12 @@ typedef struct OrpheusN3OverdubDiagnostics {
     int32_t confidencePercent;
     int32_t medianOffsetMsTimes1000;
     int32_t compensatedQualityPercent;
+    /** profileResidualSamples * 1_000_000 / sampleRate (Dart / 1000 for ms). */
+    int32_t profileResidualMsTimes1000;
+    /** 0 = UNSTABLE, 1 = OK, 2 = PASS (vs stored profile offset). */
+    int32_t profileCompensationResult;
+    /** 1 if |recorded - expected| within sanity window. */
+    int32_t recordedFramesSanity;
     int32_t _paddingForInt64Align;
 
     int64_t backingWavTotalFrames;
@@ -176,15 +182,20 @@ typedef struct OrpheusN3OverdubDiagnostics {
     int64_t transportStopSample;
     int64_t outputCallbackCount;
     int64_t inputCallbackCount;
-    int64_t medianOffsetSamples;
-    int64_t compensatedMedianResidualSamples;
+    /** Measured from recorded mic WAV (N2B). */
+    int64_t measuredMedianOffsetSamples;
+    /** N2D self-check: median - appliedMedian (applied = measured median). */
+    int64_t measuredSelfResidualSamples;
+    /** measuredMedianOffsetSamples - defaultRecordLatencyOffsetSamples. */
+    int64_t profileResidualSamples;
+    int64_t expectedRecordedFrames;
 } OrpheusN3OverdubDiagnostics;
 
 #ifdef __cplusplus
 }
 static_assert(sizeof(OrpheusN3PlaybackDiagnostics) == 112,
               "OrpheusN3PlaybackDiagnostics size must match Dart @Packed(8)");
-static_assert(sizeof(OrpheusN3OverdubDiagnostics) == 192,
+static_assert(sizeof(OrpheusN3OverdubDiagnostics) == 224,
               "OrpheusN3OverdubDiagnostics size must match Dart @Packed(8)");
 #endif
 
