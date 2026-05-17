@@ -26,6 +26,9 @@ class OrpheusN3OverdubDiagnosticsData {
     required this.confidencePercent,
     required this.medianOffsetMsTimes1000,
     required this.compensatedQualityPercent,
+    required this.profileResidualMsTimes1000,
+    required this.profileCompensationResult,
+    required this.recordedFramesSanity,
     required this.backingWavTotalFrames,
     required this.backingStartSample,
     required this.recordStartSample,
@@ -36,8 +39,10 @@ class OrpheusN3OverdubDiagnosticsData {
     required this.transportStopSample,
     required this.outputCallbackCount,
     required this.inputCallbackCount,
-    required this.medianOffsetSamples,
-    required this.compensatedMedianResidualSamples,
+    required this.measuredMedianOffsetSamples,
+    required this.measuredSelfResidualSamples,
+    required this.profileResidualSamples,
+    required this.expectedRecordedFrames,
   });
 
   final int sampleRate;
@@ -63,6 +68,10 @@ class OrpheusN3OverdubDiagnosticsData {
   final int confidencePercent;
   final int medianOffsetMsTimes1000;
   final int compensatedQualityPercent;
+  final int profileResidualMsTimes1000;
+  /// 0 = UNSTABLE, 1 = OK, 2 = PASS.
+  final int profileCompensationResult;
+  final int recordedFramesSanity;
   final int backingWavTotalFrames;
   final int backingStartSample;
   final int recordStartSample;
@@ -73,21 +82,48 @@ class OrpheusN3OverdubDiagnosticsData {
   final int transportStopSample;
   final int outputCallbackCount;
   final int inputCallbackCount;
-  final int medianOffsetSamples;
-  final int compensatedMedianResidualSamples;
+  final int measuredMedianOffsetSamples;
+  final int measuredSelfResidualSamples;
+  final int profileResidualSamples;
+  final int expectedRecordedFrames;
 
   double get transportSeconds =>
       sampleRate > 0 ? currentTransportSample / sampleRate : 0;
 
-  double get medianOffsetMs =>
+  double get measuredMedianOffsetMs =>
       sampleRate > 0
-          ? medianOffsetSamples * 1000.0 / sampleRate
+          ? measuredMedianOffsetSamples * 1000.0 / sampleRate
           : medianOffsetMsTimes1000 / 1000.0;
 
-  double get compensatedResidualMs =>
+  double get profileOffsetMs =>
       sampleRate > 0
-          ? compensatedMedianResidualSamples * 1000.0 / sampleRate
+          ? defaultRecordLatencyOffsetSamples * 1000.0 / sampleRate
           : 0;
+
+  double get profileResidualMs =>
+      sampleRate > 0
+          ? profileResidualSamples * 1000.0 / sampleRate
+          : profileResidualMsTimes1000 / 1000.0;
+
+  double get measuredSelfResidualMs =>
+      sampleRate > 0 ? measuredSelfResidualSamples * 1000.0 / sampleRate : 0;
+
+  String get profileCompensationResultLabel {
+    switch (profileCompensationResult) {
+      case 2:
+        return 'PASS';
+      case 1:
+        return 'OK';
+      default:
+        return 'UNSTABLE';
+    }
+  }
+
+  String get recordedFramesSanityLabel =>
+      recordedFramesSanity == 1 ? 'OK' : 'WARNING';
+
+  int get recordedFramesDelta =>
+      (recordedFramesWritten - expectedRecordedFrames).abs();
 
   bool get diagnosticsPlausible {
     if (backingWavLoadSuccess == 1 &&
@@ -101,7 +137,7 @@ class OrpheusN3OverdubDiagnosticsData {
   }
 }
 
-/// Must match OrpheusN3OverdubDiagnostics in audio_types.h (sizeof == 192).
+/// Must match OrpheusN3OverdubDiagnostics in audio_types.h (sizeof == 224).
 @Packed(8)
 final class OrpheusN3OverdubDiagnostics extends Struct {
   @Int32()
@@ -174,6 +210,15 @@ final class OrpheusN3OverdubDiagnostics extends Struct {
   external int compensatedQualityPercent;
 
   @Int32()
+  external int profileResidualMsTimes1000;
+
+  @Int32()
+  external int profileCompensationResult;
+
+  @Int32()
+  external int recordedFramesSanity;
+
+  @Int32()
   external int paddingForInt64Align;
 
   @Int64()
@@ -207,8 +252,14 @@ final class OrpheusN3OverdubDiagnostics extends Struct {
   external int inputCallbackCount;
 
   @Int64()
-  external int medianOffsetSamples;
+  external int measuredMedianOffsetSamples;
 
   @Int64()
-  external int compensatedMedianResidualSamples;
+  external int measuredSelfResidualSamples;
+
+  @Int64()
+  external int profileResidualSamples;
+
+  @Int64()
+  external int expectedRecordedFrames;
 }

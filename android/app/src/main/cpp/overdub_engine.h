@@ -19,6 +19,12 @@ namespace orpheus {
 constexpr int32_t kN3cSampleRate = 48000;
 /** Dev default only — not production settings (N2E target ~2900 @ 48 kHz). */
 constexpr int64_t kN3cDevDefaultRecordLatencyOffsetSamples = 2900;
+/** PASS if |profile residual| <= 512 samples (~10.7 ms @ 48 kHz). */
+constexpr int64_t kN3cProfilePassMaxResidualSamples = 512;
+/** OK if |profile residual| <= 1024 samples (~21.3 ms @ 48 kHz). */
+constexpr int64_t kN3cProfileOkMaxResidualSamples = 1024;
+/** Recorded vs expected frame delta within 100 ms @ 48 kHz. */
+constexpr int64_t kN3cRecordedFramesSanitySamples = 4800;
 
 class OverdubEngine;
 

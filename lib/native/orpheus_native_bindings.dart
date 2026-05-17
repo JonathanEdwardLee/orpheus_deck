@@ -499,6 +499,9 @@ class OrpheusNativeBindings {
         confidencePercent: d.confidencePercent,
         medianOffsetMsTimes1000: d.medianOffsetMsTimes1000,
         compensatedQualityPercent: d.compensatedQualityPercent,
+        profileResidualMsTimes1000: d.profileResidualMsTimes1000,
+        profileCompensationResult: d.profileCompensationResult,
+        recordedFramesSanity: d.recordedFramesSanity,
         backingWavTotalFrames: d.backingWavTotalFrames,
         backingStartSample: d.backingStartSample,
         recordStartSample: d.recordStartSample,
@@ -509,8 +512,10 @@ class OrpheusNativeBindings {
         transportStopSample: d.transportStopSample,
         outputCallbackCount: d.outputCallbackCount,
         inputCallbackCount: d.inputCallbackCount,
-        medianOffsetSamples: d.medianOffsetSamples,
-        compensatedMedianResidualSamples: d.compensatedMedianResidualSamples,
+        measuredMedianOffsetSamples: d.measuredMedianOffsetSamples,
+        measuredSelfResidualSamples: d.measuredSelfResidualSamples,
+        profileResidualSamples: d.profileResidualSamples,
+        expectedRecordedFrames: d.expectedRecordedFrames,
       );
     } finally {
       calloc.free(ptr);
