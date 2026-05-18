@@ -63,7 +63,13 @@ public:
     bool loadBackingWav(const std::string& path);
     void setDefaultRecordLatencyOffsetSamples(int64_t offsetSamples);
     bool openStreams();
+    /** Input + silent output; no backing WAV (N3E-H record-only). */
+    bool openStreamsRecordOnly();
     bool startOverdub(const std::string& recordWavPath, int64_t backingStartSample);
+    /** Mic-only record with transport clock; [tapeLengthSamples] = cassette end. */
+    bool startRecordOnly(const std::string& recordWavPath,
+                         int64_t recordStartSample,
+                         int64_t tapeLengthSamples);
     void stopOverdub();
     bool isComplete() const;
     void fillDiagnostics(OrpheusN3OverdubDiagnostics* out) const;
@@ -119,6 +125,7 @@ private:
     std::atomic<int32_t> outputOpened_{0};
     std::atomic<int32_t> wavWriteSuccess_{0};
     std::atomic<int32_t> playbackComplete_{0};
+    std::atomic<int32_t> recordOnlyMode_{0};
     std::atomic<int32_t> recordSuccess_{0};
     std::atomic<int32_t> errorCode_{0};
     std::atomic<int32_t> exclusiveAttempted_{0};

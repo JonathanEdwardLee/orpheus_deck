@@ -333,6 +333,12 @@ class OrpheusNativeBindings {
       .lookup<NativeFunction<Int32 Function()>>('orpheus_n3c_open_streams')
       .asFunction();
 
+  late final int Function() n3cOpenStreamsRecordOnly = lib
+      .lookup<NativeFunction<Int32 Function()>>(
+        'orpheus_n3c_open_streams_record_only',
+      )
+      .asFunction();
+
   late final int Function(Pointer<Utf8> recordPath, int backingStartSample)
       n3cStartOverdub = lib
           .lookup<
@@ -342,6 +348,20 @@ class OrpheusNativeBindings {
             'orpheus_n3c_start_overdub',
           )
           .asFunction();
+
+  late final int Function(
+    Pointer<Utf8> recordPath,
+    int recordStartSample,
+    int tapeLengthSamples,
+  ) n3cStartRecordOnly = lib
+      .lookup<
+          NativeFunction<
+              Int32 Function(
+                Pointer<Utf8> recordPath,
+                Int64 recordStartSample,
+                Int64 tapeLengthSamples,
+              )>>('orpheus_n3c_start_record_only')
+      .asFunction();
 
   late final void Function() n3cStopOverdub = lib
       .lookup<NativeFunction<Void Function()>>('orpheus_n3c_stop_overdub')

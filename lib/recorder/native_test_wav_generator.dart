@@ -58,6 +58,15 @@ Future<void> writeNativeTestTrackWav({
   await file.writeAsBytes(bytes, flush: true);
 }
 
+/// Placeholder waveform after native record (50 ms buckets).
+List<double> nativeRecordingWaveformPlaceholder(int durationMs) {
+  final int buckets = (durationMs / 50).ceil().clamp(4, 20000);
+  return List<double>.generate(
+    buckets,
+    (i) => 0.12 + 0.06 * ((i % 7) / 7.0),
+  );
+}
+
 /// Placeholder waveform for UI (50 ms buckets).
 List<double> nativeTestTrackWaveformPlaceholder(int trackIndex) {
   const int buckets = kNativeTestWavDurationSeconds * 20;

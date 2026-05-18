@@ -245,10 +245,35 @@ bool OverdubEngine::openInputStream(const oboe::SharingMode sharing) {
     return true;
 }
 
+bool OverdubEngine::openStreamsRecordOnly() {
+    lastError_.clear();
+    exclusiveAttempted_.store(0, std::memory_order_relaxed);
+    sharedFallbackUsed_.store(0, std::memory_order_relaxed);
+    recordOnlyMode_.store(1, std::memory_order_relaxed);
+
+    if (openOutputStream(oboe::SharingMode::Exclusive) &&
+        openInputStream(oboe::SharingMode::Exclusive)) {
+        ORPHEUS_LOGI("N3C record-only streams open (Exclusive)");
+        return true;
+    }
+
+    exclusiveAttempted_.store(1, std::memory_order_relaxed);
+    sharedFallbackUsed_.store(1, std::memory_order_relaxed);
+    closeStreams();
+
+    if (openOutputStream(oboe::SharingMode::Shared) &&
+        openInputStream(oboe::SharingMode::Shared)) {
+        ORPHEUS_LOGI("N3C record-only streams open (Shared fallback)");
+        return true;
+    }
+    return false;
+}
+
 bool OverdubEngine::openStreams() {
     lastError_.clear();
     exclusiveAttempted_.store(0, std::memory_order_relaxed);
     sharedFallbackUsed_.store(0, std::memory_order_relaxed);
+    recordOnlyMode_.store(0, std::memory_order_relaxed);
 
     if (backingWavLoadSuccess_.load(std::memory_order_acquire) != 1) {
         lastError_ = "N3C load backing WAV before openStreams";
@@ -344,6 +369,67 @@ bool OverdubEngine::startOverdub(const std::string& recordWavPath,
     return true;
 }
 
+bool OverdubEngine::startRecordOnly(const std::string& recordWavPath,
+                                    const int64_t recordStartSample,
+                                    const int64_t tapeLengthSamples) {
+    if (recordWavPath.empty()) {
+        lastError_ = "N3C null record path";
+        return false;
+    }
+    if (!outputOpened_.load(std::memory_order_acquire) ||
+        !inputOpened_.load(std::memory_order_acquire)) {
+        lastError_ = "N3C streams not open";
+        return false;
+    }
+    if (recordOnlyMode_.load(std::memory_order_acquire) != 1) {
+        lastError_ = "N3C not in record-only mode";
+        return false;
+    }
+
+    const int64_t tapeLen =
+        tapeLengthSamples > 0 ? tapeLengthSamples : kN3cSampleRate * 60 * 15;
+    const int64_t start = std::max<int64_t>(0, std::min(recordStartSample, tapeLen));
+    const int64_t latencyOffset =
+        defaultRecordLatencyOffsetSamples_.load(std::memory_order_relaxed);
+    const int64_t effective = start - latencyOffset;
+
+    recordWavPath_ = recordWavPath;
+    backingStartSample_.store(start, std::memory_order_relaxed);
+    recordStartSample_.store(start, std::memory_order_relaxed);
+    effectiveRecordStartSample_.store(effective, std::memory_order_relaxed);
+    currentTransportSample_.store(start, std::memory_order_relaxed);
+    transportStopSample_.store(tapeLen, std::memory_order_relaxed);
+    backingWavTotalFrames_.store(0, std::memory_order_relaxed);
+
+    wavWriteSuccess_.store(0, std::memory_order_relaxed);
+    playbackComplete_.store(0, std::memory_order_relaxed);
+    recordSuccess_.store(0, std::memory_order_relaxed);
+    overdubComplete_.store(0, std::memory_order_relaxed);
+    analysisComplete_.store(0, std::memory_order_relaxed);
+    timingResult_ = TimingAnalysisResult{};
+    workerFinalizePending_.store(0, std::memory_order_relaxed);
+
+    recordedFramesWritten_.store(0, std::memory_order_relaxed);
+    outputCallbackCount_.store(0, std::memory_order_relaxed);
+    inputCallbackCount_.store(0, std::memory_order_relaxed);
+
+    const int32_t rate = sampleRate_.load(std::memory_order_relaxed);
+    captureRing_.reset(static_cast<size_t>(rate * 12));
+
+    overdubActive_.store(true, std::memory_order_release);
+    recordSuccess_.store(1, std::memory_order_relaxed);
+
+    ORPHEUS_LOGI(
+        "N3C record-only start record=%s start=%lld effective=%lld stop=%lld "
+        "latencyOffset=%lld",
+        recordWavPath.c_str(),
+        static_cast<long long>(start),
+        static_cast<long long>(effective),
+        static_cast<long long>(tapeLen),
+        static_cast<long long>(latencyOffset));
+    return true;
+}
+
 void OverdubEngine::stopOverdub() {
     if (!overdubActive_.load(std::memory_order_acquire)) {
         return;
@@ -380,18 +466,25 @@ void OverdubEngine::markOverdubComplete() {
 void OverdubEngine::handleOutputFrames(float* data, const int32_t numFrames) {
     outputCallbackCount_.fetch_add(1, std::memory_order_relaxed);
 
-    const float* pcm = backingData_;
-    const size_t total = backingFrameCount_;
     int64_t pos = currentTransportSample_.load(std::memory_order_relaxed);
     const int64_t stop = transportStopSample_.load(std::memory_order_relaxed);
 
-    for (int32_t i = 0; i < numFrames; ++i) {
-        if (pos < stop && static_cast<size_t>(pos) < total) {
-            data[i] = pcm[static_cast<size_t>(pos)];
-        } else {
+    if (recordOnlyMode_.load(std::memory_order_relaxed) == 1) {
+        for (int32_t i = 0; i < numFrames; ++i) {
             data[i] = 0.0f;
+            ++pos;
         }
-        ++pos;
+    } else {
+        const float* pcm = backingData_;
+        const size_t total = backingFrameCount_;
+        for (int32_t i = 0; i < numFrames; ++i) {
+            if (pos < stop && static_cast<size_t>(pos) < total) {
+                data[i] = pcm[static_cast<size_t>(pos)];
+            } else {
+                data[i] = 0.0f;
+            }
+            ++pos;
+        }
     }
 
     currentTransportSample_.store(pos, std::memory_order_release);
@@ -572,6 +665,7 @@ void OverdubEngine::fillDiagnostics(OrpheusN3OverdubDiagnostics* out) const {
 void OverdubEngine::shutdown() {
     stopOverdub();
     closeStreams();
+    recordOnlyMode_.store(0, std::memory_order_relaxed);
     backing_.clear();
     backingData_ = nullptr;
     backingFrameCount_ = 0;

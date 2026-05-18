@@ -1,7 +1,7 @@
 # N3E — Hidden Native Recorder Mode Integration Plan
 
 **Branch:** `phase-n-native-audio`  
-**Status:** N3E-G complete — native_test playback-only bridge (WAV); recording blocked in native mode  
+**Status:** N3E-H complete — native_test WAV record + playback bridge; legacy unchanged  
 **Prerequisites (complete):** N1, N2 (N2B/N2D/N2E), N3B, N3C, N3C2, N3D  
 **Companion:** [N3_ARCHITECTURE.md](N3_ARCHITECTURE.md), [ORPHEUS_NATIVE_AUDIO_PLAN.md](ORPHEUS_NATIVE_AUDIO_PLAN.md), [ORPHEUS_DESIGN_MANIFESTO.md](ORPHEUS_DESIGN_MANIFESTO.md)
 
@@ -341,7 +341,7 @@ Use this before removing “experimental” or touching default engine:
 | N3E-E code | `recorder_engine_selector.dart` eligibility guard | **Done** — selection only, no routing |
 | N3E-F code | `native_test` projects + `session.json` metadata | **Done** — eligibility only, no routing |
 | N3E-G code | native playback bridge for `native_test` projects | **Done** |
-| N3E-H+ code | native one-track record bridge | **Not started** |
+| N3E-H code | native one-track WAV record bridge | **Done** |
 | N3F | Session samples + M4A migration | Planned |
 | N4 | Sample-accurate export | Planned |
 
@@ -469,7 +469,7 @@ Use this before removing “experimental” or touching default engine:
 | Playback | `NativeOboeRecorderEngine` → N3D FFI (`load_track`, `start_mix`, transport poll) |
 | Sample clock | 48 kHz; UI `_playbackMs` from native `currentTransportSample` (Dart not audio clock) |
 | Tape length | 15 min (`tapeLengthMs`) via `orpheus_n3d_set_tape_length_samples` |
-| Recording | Blocked with toast `NATIVE RECORDING COMING NEXT` (no M4A until N3E-H) |
+| Recording | N3E-H — see §16 (WAV record-only; was blocked until N3E-H) |
 | Test WAVs | Project MGMT → **GENERATE NATIVE TEST TRACKS** (debug, `native_test` only) |
 | Fallback | Native start failure → `NATIVE PLAYBACK FAILED - USING LEGACY` + legacy `_play` |
 | Legacy | Unchanged for normal projects; toggle OFF uses just_audio as before |
@@ -481,4 +481,26 @@ Use this before removing “experimental” or touching default engine:
 
 ---
 
-*Document version: N3E — updated after N3E-G (2026-05-16).*
+## 16. N3E-H implemented
+
+**Scope:** Single-track mic-only native recording for `native_test` projects (no overdub backing in this phase).
+
+| Item | Detail |
+|------|--------|
+| Engine | N3C `OverdubEngine` record-only mode (`openStreamsRecordOnly`, `startRecordOnly`) |
+| Output | `track_{i}_{ts}.wav` in project folder (48 kHz mono PCM16) — **no M4A** |
+| Transport | Native `currentTransportSample` drives reel/timer during REC |
+| Tape end | Auto-STOP at 15 min (`transportStopSample`) |
+| Latency | `defaultRecordLatencyOffsetSamples` from N2E profile in memory, else **2900** |
+| Session | `trackTapeStartMs`, `_trackOffsets` (ms from offset samples), placeholder waveform |
+| Toast | `NATIVE RECORD SAVED` on success |
+| Playback | Existing N3E-G N3D path plays recorded WAV |
+| Legacy | Normal projects still M4A + just_audio; toggle OFF unchanged |
+
+**FFI:** `orpheus_n3c_open_streams_record_only`, `orpheus_n3c_start_record_only`.
+
+**Not in this phase:** native overdub backing during REC, export migration, M4A in native_test.
+
+---
+
+*Document version: N3E — updated after N3E-H (2026-05-16).*

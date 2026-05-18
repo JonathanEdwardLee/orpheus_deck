@@ -41,7 +41,11 @@ int32_t orpheus_n3c_init(void);
 int32_t orpheus_n3c_generate_backing_wav(const char* backing_path);
 int32_t orpheus_n3c_set_default_record_latency_offset_samples(int64_t offset_samples);
 int32_t orpheus_n3c_open_streams(void);
+int32_t orpheus_n3c_open_streams_record_only(void);
 int32_t orpheus_n3c_start_overdub(const char* record_wav_path, int64_t backing_start_sample);
+int32_t orpheus_n3c_start_record_only(const char* record_wav_path,
+                                      int64_t record_start_sample,
+                                      int64_t tape_length_samples);
 void orpheus_n3c_stop_overdub(void);
 int32_t orpheus_n3c_is_complete(void);
 void orpheus_n3c_get_diagnostics(OrpheusN3OverdubDiagnostics* out);

@@ -28,6 +28,7 @@ import 'package:audio_session/audio_session.dart' as as_sess;
 import 'widgets/tape_reel_transport.dart';
 
 import 'orpheus_latency_calibration.dart';
+import 'native/orpheus_native_audio.dart';
 import 'native/orpheus_native_test_screen.dart';
 import 'recorder/native_oboe_recorder_engine.dart';
 import 'recorder/native_test_wav_generator.dart';
@@ -2192,9 +2193,10 @@ class OrpheusConsole extends RecorderScreen {
 }
 
 class _RecorderScreenState extends State<RecorderScreen> {
-  /// N3E-G: native playback-only bridge when selector is nativeExperimental.
+  /// N3E-G/H: native playback + record bridge when selector is nativeExperimental.
   NativeOboeRecorderEngine? _nativeOboeEngine;
   bool _nativePlaybackActive = false;
+  bool _nativeRecordingActive = false;
 
   bool _isPlaying = false;
   bool _isRecording = false;
@@ -4378,6 +4380,10 @@ class _RecorderScreenState extends State<RecorderScreen> {
   void _startTicker() {
     _tickerTimer?.cancel();
     _tickerTimer = Timer.periodic(const Duration(milliseconds: 50), (Timer t) {
+      if (_nativeRecordingActive && _isRecording) {
+        _pollNativeRecordingTransport(t);
+        return;
+      }
       if (_nativePlaybackActive && _isPlaying) {
         _pollNativePlaybackTransport(t);
         return;
@@ -4498,6 +4504,74 @@ class _RecorderScreenState extends State<RecorderScreen> {
     return [];
   }
 
+  bool _shouldAttemptNativeRecording() {
+    if (!kDebugMode || !Platform.isAndroid) return false;
+    final sel = _recorderEngineSelection();
+    if (sel.selectedKind != OrpheusAudioEngineKind.nativeExperimental) {
+      return false;
+    }
+    if (!isNativeTestAudioEngine(_projectAudioEngine)) return false;
+    return projectNonNullTracksAreWav(_trackFiles);
+  }
+
+  Future<bool> _tryStartNativeRecording({
+    required int armedIndex,
+    required int recordTapeStartMs,
+  }) async {
+    try {
+      if (_nativePlaybackActive) {
+        await _stopNativePlaybackOnly();
+      }
+      for (final p in _trackPlayers) {
+        await p.stop();
+      }
+
+      final dir = await getApplicationDocumentsDirectory();
+      final projDir = Directory('${dir.path}/OrpheusDeck/$_projectName');
+      if (!await projDir.exists()) {
+        await projDir.create(recursive: true);
+      }
+      final shortTimestamp =
+          (DateTime.now().millisecondsSinceEpoch % 10000000).toString();
+      final wavPath =
+          '${projDir.path}/track_${armedIndex}_$shortTimestamp.wav';
+
+      _nativeOboeEngine ??= NativeOboeRecorderEngine();
+      final int startSample = orpheusMsToNativeSamples(recordTapeStartMs);
+      final int latencyOffset =
+          OrpheusNativeAudio.instance.recordLatencyOffsetForNativeTest;
+
+      await _nativeOboeEngine!.startRecording(
+        armedTrack: armedIndex,
+        startSample: startSample,
+        outputPath: wavPath,
+        defaultRecordLatencyOffsetSamples: latencyOffset,
+      );
+
+      if (!mounted) return false;
+      _activeRecordTapeStartMs = recordTapeStartMs;
+      setState(() {
+        _isRecording = true;
+        _nativeRecordingActive = true;
+        _applyTapeHeadClamped(recordTapeStartMs);
+      });
+      _startTicker();
+      debugPrint(
+        'Orpheus N3E-H: RECORD_NATIVE armed=$armedIndex '
+        'tapeStartMs=$recordTapeStartMs path=$wavPath',
+      );
+      return true;
+    } catch (e, st) {
+      debugPrint('Orpheus N3E-H: native record start failed: $e\n$st');
+      await _nativeOboeEngine?.stopN3cSession();
+      _nativeRecordingActive = false;
+      if (mounted) {
+        _showSnackbar('ERR: NATIVE RECORD FAILED');
+      }
+      return false;
+    }
+  }
+
   bool _shouldAttemptNativePlayback() {
     if (!kDebugMode || !Platform.isAndroid) return false;
     final sel = _recorderEngineSelection();
@@ -4511,9 +4585,28 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
   Future<void> _stopNativePlaybackOnly() async {
     if (_nativeOboeEngine != null) {
-      await _nativeOboeEngine!.stop();
+      await _nativeOboeEngine!.stopN3dSession();
     }
     _nativePlaybackActive = false;
+  }
+
+  void _pollNativeRecordingTransport(Timer t) {
+    final engine = _nativeOboeEngine;
+    if (engine == null || !engine.n3cSessionOpen) {
+      return;
+    }
+    final int sample = engine.currentTransportSample;
+    final int ms = orpheusNativeSamplesToMs(sample);
+    final int maxMs = _tapeTransportMaxMs();
+    final int clampedMs = ms.clamp(0, maxMs);
+    if (engine.isRecordTransportAtTapeEnd || clampedMs >= maxMs) {
+      setState(() => _applyTapeHeadClamped(clampedMs));
+      scheduleMicrotask(() async {
+        await _stop(transportStopReason: 'TAPE_END');
+      });
+      return;
+    }
+    setState(() => _applyTapeHeadClamped(clampedMs));
   }
 
   void _pollNativePlaybackTransport(Timer t) {
@@ -4907,12 +5000,6 @@ class _RecorderScreenState extends State<RecorderScreen> {
   Future<void> _record({bool skipRecordingCheckReminder = false}) async {
     if (_isRecording || _isExporting) return;
 
-    if (_recorderEngineSelection().selectedKind ==
-        OrpheusAudioEngineKind.nativeExperimental) {
-      _showSnackbar('NATIVE RECORDING COMING NEXT');
-      return;
-    }
-
     int armedCount = _armedTracks.where((isArmed) => isArmed).length;
     if (armedCount != 1) {
       _showSnackbar('ERR: EXACTLY 1 TRACK MUST BE ARMED');
@@ -4940,6 +5027,14 @@ class _RecorderScreenState extends State<RecorderScreen> {
     if (status != PermissionStatus.granted) {
       _showSnackbar('ERR: MIC PERMISSION DENIED');
       return;
+    }
+
+    if (_shouldAttemptNativeRecording()) {
+      final bool nativeRecOk = await _tryStartNativeRecording(
+        armedIndex: armedIndex,
+        recordTapeStartMs: recordTapeStartMs,
+      );
+      if (nativeRecOk) return;
     }
 
     if (await _recorder.hasPermission()) {
@@ -5221,7 +5316,45 @@ class _RecorderScreenState extends State<RecorderScreen> {
 
     bool recordedSomething = false;
 
-    if (_isRecording) {
+    if (_nativeRecordingActive && _nativeOboeEngine != null) {
+      final int armedIndex = _armedTracks.indexOf(true);
+      final int savedTapeStartMs = _activeRecordTapeStartMs ?? _playbackMs;
+      final result = await _nativeOboeEngine!.finalizeRecording();
+      _nativeRecordingActive = false;
+      if (result.success && armedIndex >= 0) {
+        final int offsetMs =
+            orpheusNativeSamplesToMs(result.recordLatencyOffsetSamples);
+        final int durationMs =
+            orpheusNativeSamplesToMs(result.recordedFramesWritten);
+        setState(() {
+          _trackFiles[armedIndex] = result.path;
+          _trackTapeStartMs[armedIndex] = savedTapeStartMs;
+          _trackOffsets[armedIndex] = offsetMs;
+          _waveformCache[result.path] =
+              nativeRecordingWaveformPlaceholder(durationMs);
+          _armedTracks[armedIndex] = false;
+          recordedSomething = true;
+        });
+        debugPrint(
+          'Orpheus N3E-H: RECORD_SAVE armed=$armedIndex '
+          'tapeStartMs=$savedTapeStartMs path=${result.path} '
+          'frames=${result.recordedFramesWritten} xruns=${result.xRunCount}',
+        );
+        _showSnackbar('NATIVE RECORD SAVED');
+      } else {
+        final f = File(result.path);
+        if (result.path.isNotEmpty && f.existsSync()) {
+          f.deleteSync();
+        }
+        if (armedIndex >= 0) {
+          setState(() {
+            _armedTracks[armedIndex] = false;
+          });
+        }
+        _showSnackbar('ERR: NATIVE RECORD FAILED');
+      }
+      _activeRecordTapeStartMs = null;
+    } else if (_isRecording) {
       _amplitudeSub?.cancel();
       final path = await _recorder.stop();
       if (path != null) {
@@ -5279,6 +5412,7 @@ class _RecorderScreenState extends State<RecorderScreen> {
       _isPlaying = false;
       _isRecording = false;
       _nativePlaybackActive = false;
+      _nativeRecordingActive = false;
     });
 
     if (recordedSomething) {

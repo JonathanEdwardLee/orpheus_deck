@@ -393,6 +393,18 @@ int32_t orpheus_n3c_open_streams(void) {
     return 0;
 }
 
+int32_t orpheus_n3c_open_streams_record_only(void) {
+    if (!gOverdubEngine) {
+        setError("N3C engine not initialized");
+        return -1;
+    }
+    if (!gOverdubEngine->openStreamsRecordOnly()) {
+        setError(gOverdubEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
 int32_t orpheus_n3c_start_overdub(const char* record_wav_path,
                                   const int64_t backing_start_sample) {
     if (!gOverdubEngine) {
@@ -405,6 +417,26 @@ int32_t orpheus_n3c_start_overdub(const char* record_wav_path,
     }
     if (!gOverdubEngine->startOverdub(std::string(record_wav_path),
                                       backing_start_sample)) {
+        setError(gOverdubEngine->lastError());
+        return -1;
+    }
+    return 0;
+}
+
+int32_t orpheus_n3c_start_record_only(const char* record_wav_path,
+                                      const int64_t record_start_sample,
+                                      const int64_t tape_length_samples) {
+    if (!gOverdubEngine) {
+        setError("N3C engine not initialized");
+        return -1;
+    }
+    if (record_wav_path == nullptr) {
+        setError("N3C null record path");
+        return -1;
+    }
+    if (!gOverdubEngine->startRecordOnly(std::string(record_wav_path),
+                                         record_start_sample,
+                                         tape_length_samples)) {
         setError(gOverdubEngine->lastError());
         return -1;
     }
